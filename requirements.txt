@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+rapidfuzz
+gspread
+gspread-dataframe
+google-auth
+oauth2client
