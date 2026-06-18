@@ -1,6 +1,6 @@
 """
-engine_redistribute.py — Ticket & Subcategory Apportionment Engine (v4.0)
-Apportionments unmapped brand tickets using dynamic allocations with cap overrides.
+engine_redistribute.py — Advanced Proportional Ticket Apportionment Engine (v4.0)
+Calculates brand weights across categories safely with cap allocations.
 """
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ MAX_ALLOC_PCT = 0.35
 
 
 def compute_brand_weights(brand_summary, valid_ticks):
-    """Calculates allocation weights: 40% Esc %, 30% Delivered, 20% Tickets, 10% WoW Trend."""
+    """Calculates weights: 40% Esc %, 30% Delivered, 20% Tickets, 10% WoW Trend [D]."""
     df = brand_summary.copy()
     if df.empty or df["delivered"].sum() == 0:
         return pd.Series(dtype=float)
@@ -84,7 +84,6 @@ def _apply_balancing_caps(weights, min_pct, max_pct):
 
 
 def redistribute_tickets(unmapped_df, brand_weights, rng):
-    """Redistributes unmapped brand tickets based on calculated brand weights."""
     if len(unmapped_df) == 0 or len(brand_weights) == 0:
         return unmapped_df.copy()
 
@@ -101,7 +100,7 @@ def redistribute_tickets(unmapped_df, brand_weights, rng):
 
 
 def redistribute_subcat(raw_subcat, brand, product, ticket_category, rng):
-    """Apportions placeholders (e.g. Not Found) using Pre/Post operational rules."""
+    """Redistributes unmapped subcategories ensuring Pre/Post split integrity."""
     if raw_subcat not in ("Not Found", "Need Details"):
         return raw_subcat
         
@@ -146,7 +145,6 @@ def redistribute_subcat(raw_subcat, brand, product, ticket_category, rng):
 
 
 def is_apparel_brand_or_product(brand, product):
-    """Filters product category types by scanning strings for apparel or tech terms."""
     brand_l = str(brand).lower()
     prod_l = str(product).lower()
     
@@ -168,7 +166,7 @@ def is_apparel_brand_or_product(brand, product):
 
 
 def build_redistribution_summary(n_brand_nf, n_subcat_nf, n_need_details, brand_weights):
-    """Builds the redistribution summary ledger."""
+    """Builds a clear audit summary table of how unmapped files are distributed."""
     rows = []
     for brand, w in brand_weights.items():
         rows.append({
