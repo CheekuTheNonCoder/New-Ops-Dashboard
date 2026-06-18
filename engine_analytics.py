@@ -1,18 +1,19 @@
 """
-engine_analytics.py — Centralized Analytical & Escalation Rate Engine (v4.0)
-Vectorized operations that enforce metric uniformity across Pre, Post, and Combined modes.
+engine_analytics.py — Advanced Analytical, Scoring, Cohort & Risk Engine (v4.0)
+Calculates brand/product escalation metrics, weighted esc %, and ticket aging categories.
+Strictly calculates unique Delivered Orders and Pre/Post denominators to prevent duplication.
 """
 import pandas as pd
 import numpy as np
 
-# Subcategory severity classifications
+# Subcategory severity mappings
 HIGH_SUBCATS = ["Defective Product", "Damaged Product", "Low Quality Product", "Order Delay", "Order Not Shipped"]
 MEDIUM_SUBCATS = ["Wrong Product Delivered", "Missing Items", "Refund Post Delivery", "Cancellation Request", "Tracking Query"]
 LOW_SUBCATS = ["Colour Issue", "Size issue", "Quantity Mismatch", "Order Modification", "Address Change", "Payment Issue", "Order Confirmation Issue"]
 
 
 def confidence_factor(delivered):
-    """Calculates scaling multiplier based on delivery order volumes."""
+    """Returns a confidence multiplier 0.0–1.0 based on delivery volume."""
     if delivered >= 500:  return 1.00
     if delivered >= 300:  return 0.90
     if delivered >= 200:  return 0.80
@@ -23,7 +24,7 @@ def confidence_factor(delivered):
 
 
 def weighted_esc(tickets, delivered):
-    """Calculates confidence-adjusted escalation rate."""
+    """Confidence-adjusted escalation percentage."""
     if delivered <= 0:
         return 0.0
     raw = (tickets / delivered) * 100
@@ -32,7 +33,6 @@ def weighted_esc(tickets, delivered):
 
 
 def raw_esc(tickets, delivered):
-    """Calculates raw percentage rate."""
     if delivered <= 0:
         return 0.0
     return round((tickets / delivered) * 100, 2)
@@ -42,13 +42,14 @@ def compute_brand_summary(del_df, tick_df,
                           crit_del=300, crit_esc=7.0, crit_tix=25,
                           high_del=200, high_esc=5.0,
                           med_del=100, med_esc=3.0):
-    """Calculates performance summary matrix for active brands."""
-    brand_del = del_df.groupby("brand").size().reset_index(name="delivered")
+    """Calculates active brand profiles with exact unique order denominators."""
+    # Enforce unique order counts strictly (zop_id) rather than row size
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
+    brand_del = del_df.groupby("brand")[order_col].nunique().reset_index(name="delivered")
     brand_tick = tick_df.groupby("brand").size().reset_index(name="tickets")
     
     subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
     
-    # Filter physical defects
     defect_tix = tick_df[tick_df[subcat_col].isin(HIGH_SUBCATS)]
     brand_defect = defect_tix.groupby("brand").size().reset_index(name="defect_tickets")
     
@@ -68,7 +69,6 @@ def compute_brand_summary(del_df, tick_df,
     df["del_share"] = (df["delivered"] / max(df["delivered"].sum(), 1) * 100).round(1)
     df["tick_share"] = (df["tickets"] / max(df["tickets"].sum(), 1) * 100).round(1)
     
-    # Resolve top drivers
     top_drivers = {}
     for b in df["brand"]:
         b_tix = tick_df[tick_df["brand"] == b]
@@ -78,7 +78,6 @@ def compute_brand_summary(del_df, tick_df,
             top_drivers[b] = "N/A"
     df["Top Escalation Driver"] = df["brand"].map(top_drivers)
     
-    # Impact status mapping
     df["impact"] = df.apply(
         lambda r: "CRITICAL" if r["delivered"] >= crit_del and r["esc_pct"] >= crit_esc and r["tickets"] >= crit_tix 
         else "HIGH" if r["delivered"] >= high_del and r["esc_pct"] >= high_esc
@@ -93,14 +92,16 @@ def compute_product_summary(del_df, tick_df,
                              crit_del=300, crit_esc=7.0, crit_tix=25,
                              high_del=200, high_esc=5.0,
                              med_del=100, med_esc=3.0):
-    """Calculates performance metrics at a canonical product group level."""
-    prod_del = del_df.groupby(["brand", "canonical_product"]).size().reset_index(name="delivered")
+    """Detailed Product-level matrix calculations using unique Order ID denominators."""
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
+    prod_del = del_df.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered")
     prod_tick = tick_df.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets")
     
     df = prod_del.merge(prod_tick, on=["brand", "canonical_product"], how="outer").fillna(0)
     df["delivered"] = df["delivered"].astype(int)
     df["tickets"] = df["tickets"].astype(int)
     df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
+    
     df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
     df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
     df["brand_product"] = df["brand"] + " | " + df["canonical_product"]
@@ -113,10 +114,18 @@ def compute_product_summary(del_df, tick_df,
         if not sub_ticks.empty:
             primary_cohorts[(brand, prod)] = sub_ticks["Delivery Month"].value_counts().index[0]
             
-            same_m, prev_m, older_m = 0, 0, 0
+            same_m = 0
+            prev_m = 0
+            older_m = 0
+            
             for _, row in sub_ticks.iterrows():
                 try:
-                    diff = (row["Ticket Month Sort"] - row["Delivery Month Sort"]).n
+                    diff_val = (row["Ticket Month Sort"] - row["Delivery Month Sort"])
+                    if hasattr(diff_val, "n"):
+                        diff = diff_val.n
+                    else:
+                        diff = int(diff_val)
+                        
                     if diff <= 0:
                         same_m += 1
                     elif diff == 1:
@@ -128,7 +137,6 @@ def compute_product_summary(del_df, tick_df,
                     
             ticket_aging[(brand, prod)] = (same_m, prev_m, older_m)
             total = len(sub_ticks)
-            
             if same_m / total >= 0.50:
                 aging_cats[(brand, prod)] = "Emerging Risk"
             elif prev_m / total >= 0.50:
@@ -159,11 +167,12 @@ def compute_product_summary(del_df, tick_df,
 
 
 def compute_cohort_report(del_df, tick_df):
-    """Generates monthly timeline reports for cohorts."""
+    """Calculates chronological delivery cohort profiles using unique Order IDs."""
     if del_df.empty:
         return pd.DataFrame()
         
-    cohort_del = del_df.groupby("Delivery Month Sort").size().reset_index(name="delivered")
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
+    cohort_del = del_df.groupby("Delivery Month Sort")[order_col].nunique().reset_index(name="delivered")
     cohort_tick = tick_df.groupby("Delivery Month Sort").size().reset_index(name="tickets")
     
     df = cohort_del.merge(cohort_tick, on="Delivery Month Sort", how="outer").fillna(0)
@@ -176,11 +185,12 @@ def compute_cohort_report(del_df, tick_df):
 
 
 def compute_weekly_trends(del_df, tick_df, weeks_list):
-    """Calculates weekly support trends and triggers spike alerts."""
+    """Calculates weekly support trends and triggers spike alerts using unique Order IDs."""
     if del_df.empty:
         return pd.DataFrame()
         
-    del_w = del_df.groupby("Delivery Week").size().reindex(weeks_list, fill_value=0)
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
+    del_w = del_df.groupby("Delivery Week")[order_col].nunique().reindex(weeks_list, fill_value=0)
     tick_w = tick_df.groupby("Delivery Week").size().reindex(weeks_list, fill_value=0)
     
     df = pd.DataFrame({
@@ -198,10 +208,12 @@ def compute_weekly_trends(del_df, tick_df, weeks_list):
 
 
 def compute_subcat_summary(tick_df):
-    """Calculates support subcategory share percentages and severity classifications."""
+    """Calculates overall subcategory ticket volume and share %."""
     if tick_df.empty:
         return pd.DataFrame()
-    df = tick_df.groupby("subcat_final").size().reset_index(name="count")
+    subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
+    df = tick_df.groupby(subcat_col).size().reset_index(name="count")
+    df = df.rename(columns={subcat_col: "subcat_final"})
     total = max(df["count"].sum(), 1)
     df["pct"] = (df["count"] / total * 100).round(1)
     df["tier"] = df["subcat_final"].apply(
@@ -211,8 +223,9 @@ def compute_subcat_summary(tick_df):
 
 
 def top_kpis(brand_sum, prod_sum, subcat_sum, tick_df, del_df, weeks_list):
-    """Aggregates high-level system metrics strictly from the active dataset."""
-    total_del = len(del_df)
+    """Aggregates high-level system metrics strictly using unique Order ID denominators."""
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
+    total_del = del_df[order_col].nunique() if not del_df.empty else 0
     total_tick = len(tick_df)
     overall = raw_esc(total_tick, total_del)
     
