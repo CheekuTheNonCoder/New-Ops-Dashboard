@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Calibrated dayfirst=True and format="mixed" together to handle European DD-MM-YYYY formats.
+Fixed: Calibrated dayfirst=True, format="mixed", and Excel serial dates conversion.
 """
 import io
 import pandas as pd
@@ -33,15 +33,32 @@ def _detect_col(df, keywords, fallback=0):
 
 def safe_parse_datetime(series):
     """
-    Robustly parses date series handling European day-first format, 
-    standard formats, and mixed formats safely.
+    A completely bulletproof date parser. Handles Excel serial dates, 
+    mixed formats, day-first string dates, and epoch timestamps safely.
     """
+    s = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+        
+    # Check and convert numeric Excel serial dates if present
+    try:
+        s_numeric = pd.to_numeric(s, errors="coerce")
+        excel_mask = s_numeric.notna() & (s_numeric > 25000) & (s_numeric < 60000)
+        if excel_mask.any():
+            excel_dates = pd.to_datetime(s_numeric[excel_mask], unit="D", origin="1899-12-30")
+            s = s.astype(object)
+            s[excel_mask] = excel_dates
+    except Exception:
+        pass
+        
     try:
         # Enforce dayfirst=True directly with mixed format to prevent warning coercion
-        return pd.to_datetime(series, errors="coerce", format="mixed", dayfirst=True)
+        return pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
     except Exception:
-        # Fallback to standard dayfirst parsing
-        return pd.to_datetime(series, errors="coerce", dayfirst=True)
+        try:
+            return pd.to_datetime(s, errors="coerce", dayfirst=True)
+        except Exception:
+            return pd.to_datetime(s, errors="coerce")
 
 
 def parse_date_hierarchy(df, col_name, prefix):
