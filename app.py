@@ -1,6 +1,6 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
-Fully integrates Google Sheets, chronological multi-month logic, and segmented support modes.
+Calculates overall support metrics and maps custom single-period dropdown filters.
 """
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ import json
 import os
 
 from google_loader import load_sheet_data, SPREADSHEET_ID
-from engine_loader import process_pipeline
+from engine_loader import process_pipeline, generate_dynamic_periods
 from engine_analytics import (
     compute_brand_summary, compute_product_summary,
     compute_cohort_report, compute_weekly_trends, top_kpis, raw_esc,
@@ -25,7 +25,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Render Custom Dark Theme layout
 st.markdown("""
 <style>
 html, body, [data-testid="stAppViewContainer"] { background: #0D1117 !important; }
@@ -57,7 +56,6 @@ def kpi(label, value, sub="", color="blue"):
 
 
 def handle_ai_error(e):
-    """Analyzes and displays specific AI connection errors."""
     err_msg = str(e)
     if "getaddrinfo failed" in err_msg or "11001" in err_msg:
         st.error("🔌 **Connection Issue:** Verify your system has active internet access.")
@@ -69,7 +67,6 @@ def handle_ai_error(e):
         st.error(f"⚠️ **AI Execution Error:** {err_msg}")
 
 
-# Cache pipeline executions to optimize memory use
 @st.cache_data(show_spinner=False)
 def run_pipeline(del_df_raw, tick_df_raw):
     return process_pipeline(del_df_raw, tick_df_raw)
@@ -155,43 +152,27 @@ final_c = D.get("final_ticket_count", 0)
 val_ok = D.get("validation_ok", False)
 
 
-# ── PERIOD FILTER INTERFACE ──
+# ── TIME INTELLIGENCE & FILTER INTERFACE ──
 st.markdown("### 📊 Time Intelligence Filter")
-t1, t2 = st.columns([2, 4])
-with t1:
-    period_type = st.selectbox("Period Filter Level", ["All Data", "Year", "Quarter", "Month", "Week"])
 
-available_months = sorted(del_df["Delivery Month Sort"].dropna().unique())
+# Generate period options strictly from the raw_date of uploaded data (No hardcoding)
+period_options = generate_dynamic_periods(del_df, "raw_date")
+selected_period = st.selectbox("Select Filter Period", period_options)
 
-with t2:
-    if period_type == "All Data":
-        selected_period = "All Data"
-        f_del = del_df.copy()
-        f_tick = tick_df.copy()
-        st.info("Displaying aggregate operational metrics for all timeline cohorts.")
-    elif period_type == "Year":
-        selected_period = st.selectbox("Select Year Range", sorted(del_df["Delivery Year"].unique()))
-        f_del = del_df[del_df["Delivery Year"] == selected_period].copy()
-        f_tick = tick_df[tick_df["Delivery Year"] == selected_period].copy()
-    elif period_type == "Quarter":
-        selected_period = st.selectbox("Select Business Quarter", sorted(del_df["Delivery Quarter"].unique()))
-        f_del = del_df[del_df["Delivery Quarter"] == selected_period].copy()
-        f_tick = tick_df[tick_df["Delivery Quarter"] == selected_period].copy()
-    elif period_type == "Month":
-        # Interactive Multi-Month Select Dropdown
-        detected_months = [m.strftime("%B %Y") for m in available_months]
-        selected_months = st.multiselect("Select Months", options=detected_months, default=detected_months)
-        if not selected_months:
-            st.warning("Please select at least one Month to load results.")
-            st.stop()
-        
-        selected_period = ", ".join(selected_months) if len(selected_months) < 3 else f"{len(selected_months)} Months Selected"
-        f_del = del_df[del_df["Delivery Month"].isin(selected_months)].copy()
-        f_tick = tick_df[tick_df["Delivery Month"].isin(selected_months)].copy()
-    elif period_type == "Week":
-        selected_period = st.selectbox("Select Calendar Week", sorted(del_df["Delivery Week"].unique(), reverse=True))
-        f_del = del_df[del_df["Delivery Week"] == selected_period].copy()
-        f_tick = tick_df[tick_df["Delivery Week"] == selected_period].copy()
+# Filter both dataframes dynamically based on selection
+if selected_period == "All Data":
+    f_del = del_df.copy()
+    f_tick = tick_df.copy()
+else:
+    try:
+        # Check if selected_period is a precise single date (e.g. "May 14, 2026")
+        parsed_date = pd.to_datetime(selected_period, format="%B %d, %Y")
+        f_del = del_df[pd.to_datetime(del_df["raw_date"], errors="coerce").dt.date == parsed_date.date()].copy()
+        f_tick = tick_df[pd.to_datetime(tick_df["Delivery Date"], errors="coerce").dt.date == parsed_date.date()].copy()
+    except Exception:
+        # Fallback to Month matching (e.g. "May 2026")
+        f_del = del_df[del_df["Delivery Month"] == selected_period].copy()
+        f_tick = tick_df[tick_df["Delivery Month"] == selected_period].copy()
 
 
 # ── OPERATIONS UNIVERSE SEGMENT SELECTOR ──
@@ -200,7 +181,7 @@ analysis_mode = st.radio(
     "Active Segment Filter",
     ["Post Delivery", "Pre Delivery", "Combined"],
     horizontal=True,
-    help="POST limits orders to 'delivered' and matches post tickets; PRE includes all orders and match pre tickets."
+    help="POST limits orders to 'delivered' and matches post tickets; PRE includes all orders and matches pre tickets."
 )
 
 if analysis_mode == "Post Delivery":
@@ -222,12 +203,13 @@ weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
-# Calculate dynamic KPIs cleanly from the active sliced dataset
-overall_orders_count = len(f_del_universe)
+# Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
+overall_orders_count = f_del_universe["order_id"].nunique() if not f_del_universe.empty else 0
 overall_tickets_count = len(f_tick_universe)
 overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
-defect_tickets_count = len(f_tick_universe[f_tick_universe["subcat_final"].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
+subcat_col = "subcat_final" if "subcat_final" in f_tick_universe.columns else "raw_subcat"
+defect_tickets_count = len(f_tick_universe[f_tick_universe[subcat_col].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
 overall_defect_rate = round((defect_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
 kpis = top_kpis(brand_sum, prod_sum, subcat_sum, f_tick_universe, f_del_universe, weeks_list)
@@ -277,7 +259,6 @@ if has_comparison:
 
 
 # ── REPORT EXPORTER TRIGGER ──
-# Pass temporally-sliced bases (f_del, f_tick) to match active selection exactly
 xl_data = generate_excel_report(
     kpis, brand_sum, prod_sum, subcat_sum,
     weekly_trends, redist_sum, cohort_report, comp_df_brand, comp_df_prod,
@@ -298,7 +279,7 @@ st.markdown("### 📊 Active Segment Performance Overview")
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1: 
     lbl_o = "Delivered Orders" if analysis_mode == "Post Delivery" else "Total Orders"
-    kpi(lbl_o, f"{overall_orders_count:,}", "Filtered universe denominator.", "blue")
+    kpi(lbl_o, f"{overall_orders_count:,}", "Unique Order IDs from dynamic status rules.", "blue")
 with c2: 
     kpi("Tickets", f"{overall_tickets_count:,}", "Filtered universe numerator.", "red")
 with c3: 
@@ -565,9 +546,9 @@ with tab7:
 with tab8:
     st.markdown('<p class="shdr">Cognitive Operational Insights & Recommendations</p>', unsafe_allow_html=True)
     if not ai_on:
-        st.info("AI Analysis is disabled. Toggle 'Enable AI Analysis Panel' in the sidebar and provide an API Key.")
+        st.info("AI Analysis is deactivated. Toggle 'Enable AI Analysis' in the sidebar.")
     elif not api_key:
-        st.warning("Please enter a valid Google Gemini API Key in the sidebar.")
+        st.warning("Please enter your Google Gemini API Key in the sidebar.")
     else:
         def call_gemini(prompt, key):
             import urllib.request
@@ -584,31 +565,31 @@ with tab8:
 
         ai1, ai2 = st.columns(2)
         with ai1:
-            st.markdown("#### 📊 Dynamic Executive Summary")
-            if st.button("Generate Strategic Analysis Summary", key="ai_exec"):
-                with st.spinner("Analyzing operational performance..."):
+            st.markdown("#### 📑 Summary Generator")
+            if st.button("Generate Strategic Analysis", key="ai_exec"):
+                with st.spinner("Analysing performance matrix..."):
                     try:
                         out = call_gemini(f"""Senior Operational Analyst.
 Active Analysis Universe Mode: {analysis_mode}
-{overall_orders_count:,} orders, {overall_tickets_count:,} tickets, overall escalation {overall_esc_rate}%.
+Context: {overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets, overall escalation {overall_esc_rate}%.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
-Top Issues: {json.dumps(top_i)}
-Construct: 1) Executive Performance Summary, 2) Critical Brand Profiles, 3) Primary Support Drivers, 4) Product Focus Area, 5) Five Priority SLA Actions.
-Support your analysis using actual metrics from the dataset.""", api_key)
+Top Issues Categories: {json.dumps(top_i)}
+Please construct: 1) Executive Performance Summary, 2) Critical Brand Profiles, 3) Primary Root Causes, 4) Product Focus Area, 5) Five Immediate Operational Recommendations.
+Ensure your recommendations reference metrics from the dataset. Maintain a business-friendly, professional tone.""", api_key)
                         st.markdown(f'<div class="ai-box">{out}</div>', unsafe_allow_html=True)
                     except Exception as e:
                         handle_ai_error(e)
         with ai2:
-            st.markdown("#### 💬 Query Operational Scenario Expert")
-            q = st.text_area("Ask Question:", placeholder="e.g. Which specific product drivers are causing the highest defect spikes this month?", height=90, key="ai_q")
+            st.markdown("#### 💬 Ask Operational Expert")
+            q = st.text_area("Question", placeholder="e.g. Which specific product drivers are causing the highest defect spikes this month?", height=90, key="ai_q")
             if st.button("Query Expert", key="ai_ask"):
                 if q.strip():
-                    with st.spinner("Running scenario checks..."):
+                    with st.spinner("Processing scenario..."):
                         try:
-                            out = call_gemini(f"""Senior Support Engineer.
+                            out = call_gemini(f"""Senior Escalation Engineer.
 Active Analysis Universe Mode: {analysis_mode}
-{overall_orders_count:,} orders, {overall_tickets_count:,} tickets.
+{overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
 Top Issues: {json.dumps(top_i)}
@@ -619,8 +600,8 @@ Respond directly to the user's query using calculations and metrics from the pro
                             handle_ai_error(e)
 
         st.divider()
-        st.markdown("#### 🏷️ Brand Intelligence Deep Dive")
-        ai_b = st.selectbox("Select Brand Profile for Deep Dive", brand_sum["brand"].tolist() if not brand_sum.empty else [], key="ai_bd")
+        st.markdown("#### 🏷️ Individual Brand Intelligence Deep Dive")
+        ai_b = st.selectbox("Select Brand for Deep Dive", brand_sum["brand"].tolist() if not brand_sum.empty else [], key="ai_bd")
         if st.button("Generate Brand Intelligence Report", key="ai_bd_btn"):
             bd  = brand_sum[brand_sum["brand"]==ai_b].to_dict("records")
             bp2 = prod_sum[prod_sum["brand"]==ai_b].head(8)[["canonical_product","delivered","tickets","esc_pct"]].to_dict("records") if not prod_sum.empty else []
