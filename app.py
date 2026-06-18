@@ -178,6 +178,18 @@ else:
         f_tick = tick_df[tick_df["Delivery Month"] == selected_period].copy()
 
 
+# ── DATE DIAGNOSTICS FOR QUALITY ASSURANCE ──
+if len(period_options) <= 1:
+    with st.sidebar.expander("🛠️ Live Date Debugger (Empty Months Detected)", expanded=True):
+        st.warning("⚠️ Checking Google Sheets format:")
+        st.write("**Delivered Columns:**", list(del_df_raw.columns))
+        if not del_df_raw.empty:
+            st.write("**First 3 raw dates:**", del_df_raw.iloc[:3, 0].tolist())
+        st.write("**Tickets Columns:**", list(tick_df_raw.columns))
+        if not tick_df_raw.empty:
+            st.write("**First 3 raw dates:**", tick_df_raw.iloc[:3, 0].tolist())
+
+
 # ── OPERATIONS UNIVERSE SEGMENT SELECTOR ──
 st.markdown("### 🔍 Segment Category Filter")
 analysis_mode = st.radio(
