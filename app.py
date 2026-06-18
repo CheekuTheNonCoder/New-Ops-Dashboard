@@ -151,6 +151,9 @@ orig = D.get("original_ticket_count", 0)
 final_c = D.get("final_ticket_count", 0)
 val_ok = D.get("validation_ok", False)
 
+# Dynamic available months parsing to prevent NameError on historical comparison tab
+available_months = sorted(del_df["Delivery Month Sort"].dropna().unique())
+
 
 # ── TIME INTELLIGENCE & FILTER INTERFACE ──
 st.markdown("### 📊 Time Intelligence Filter")
