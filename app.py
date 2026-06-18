@@ -1,7 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
-Fixed: Aligned ticket filtering with Ticket Month and orders with Delivery Month.
+Fixed: Implemented segment-aware separate KPIs and side-by-side matrices in Combined Mode.
 """
 import streamlit as st
 import pandas as pd
@@ -214,14 +214,16 @@ else:
 
 
 # ── RUN SEGMENT ANALYTICS ──
-brand_sum = compute_brand_summary(f_del_universe, f_tick_universe, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
-prod_sum = compute_product_summary(f_del_universe, f_tick_universe, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
+brand_sum = compute_brand_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
+prod_sum = compute_product_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
 cohort_report = compute_cohort_report(f_del_universe, f_tick_universe)
 weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
 # Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
+status_col = "order_status" if "order_status" in f_del_universe.columns else None
+
 overall_orders_count = f_del_universe["order_id"].nunique() if not f_del_universe.empty else 0
 overall_tickets_count = len(f_tick_universe)
 overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
@@ -248,8 +250,8 @@ if has_comparison:
     del_b = del_df[del_df["Delivery Month"] == month_b]
     tick_b = tick_df[tick_df["Delivery Month"] == month_b]
     
-    brand_a = compute_brand_summary(del_a, tick_a, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
-    brand_b = compute_brand_summary(del_b, tick_b, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
+    brand_a = compute_brand_summary(del_a, tick_a, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
+    brand_b = compute_brand_summary(del_b, tick_b, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
     
     comp_df_brand = pd.DataFrame(index=sorted(list(set(brand_a.index) | set(brand_b.index))))
     comp_df_brand["Month A Esc %"] = comp_df_brand.index.map(brand_a["esc_pct"]).fillna(0.0)
@@ -260,8 +262,8 @@ if has_comparison:
     )
     comp_df_brand = comp_df_brand.reset_index().rename(columns={"index": "Brand"})
 
-    prod_a = compute_product_summary(del_a, tick_a, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
-    prod_b = compute_product_summary(del_b, tick_b, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
+    prod_a = compute_product_summary(del_a, tick_a, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
+    prod_b = compute_product_summary(del_b, tick_b, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
     
     comp_df_prod = pd.DataFrame(index=sorted(list(set(prod_a.index) | set(prod_b.index))))
     comp_df_prod["Month A Esc %"] = comp_df_prod.index.map(prod_a["esc_pct"]).fillna(0.0)
@@ -294,18 +296,43 @@ st.sidebar.download_button(
 
 # ── KPI METRICS DISPLAY ──
 st.markdown("### 📊 Active Segment Performance Overview")
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1: 
-    lbl_o = "Delivered Orders" if analysis_mode == "Post Delivery" else "Total Orders"
-    kpi(lbl_o, f"{overall_orders_count:,}", "Unique Order IDs from dynamic status rules.", "blue")
-with c2: 
-    kpi("Tickets", f"{overall_tickets_count:,}", "Filtered universe numerator.", "red")
-with c3: 
-    kpi("Escalation Rate %", f"{overall_esc_rate}%", "Support tickets ÷ orders.", "amber" if overall_esc_rate >= 3.0 else "green")
-with c4: 
-    kpi("Defect Rate %", f"{overall_defect_rate}%", "Quality issues ÷ orders.", "red" if overall_defect_rate >= 1.5 else "green")
-with c5: 
-    kpi("Peak Week", str(kpis['spike_week']), "Highest volume week.", "purple")
+
+if analysis_mode == "Combined":
+    # Under Combined Mode, calculate and display BOTH metrics separately
+    if status_col:
+        post_orders_count = f_del_universe[f_del_universe[status_col].astype(str).str.strip().str.lower() == "delivered"]["order_id"].nunique()
+    else:
+        post_orders_count = f_del_universe["order_id"].nunique()
+    pre_orders_count = f_del_universe["order_id"].nunique()
+    
+    post_tickets_count = len(f_tick_universe[f_tick_universe["ticket_category"] == "POST_DELIVERY"])
+    pre_tickets_count = len(f_tick_universe[f_tick_universe["ticket_category"] == "PRE_DELIVERY"])
+    
+    post_esc_rate = round((post_tickets_count / max(post_orders_count, 1)) * 100, 2)
+    pre_esc_rate = round((pre_tickets_count / max(pre_orders_count, 1)) * 100, 2)
+    
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1: kpi("Delivered Orders", f"{post_orders_count:,}", "Post Denominator", "blue")
+    with c2: kpi("Total Orders", f"{pre_orders_count:,}", "Pre Denominator", "blue")
+    with c3: kpi("Post Tickets", f"{post_tickets_count:,}", "Post Numerator", "red")
+    with c4: kpi("Pre Tickets", f"{pre_tickets_count:,}", "Pre Numerator", "red")
+    with c5: kpi("Post Escalation %", f"{post_esc_rate}%", "Post Tickets ÷ Delivered", "amber" if post_esc_rate >= 3.0 else "green")
+    with c6: kpi("Pre Escalation %", f"{pre_esc_rate}%", "Pre Tickets ÷ Total", "amber" if pre_esc_rate >= 3.0 else "green")
+else:
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: 
+        lbl_o = "Delivered Orders" if analysis_mode == "Post Delivery" else "Total Orders"
+        kpi(lbl_o, f"{overall_orders_count:,}", "Unique Order IDs from dynamic status rules.", "blue")
+    with c2: 
+        kpi("Tickets", f"{overall_tickets_count:,}", "Filtered universe numerator.", "red")
+    with c3: 
+        lbl_esc_name = "Post Escalation %" if analysis_mode == "Post Delivery" else "Pre Escalation %"
+        kpi(lbl_esc_name, f"{overall_esc_rate}%", "Support tickets ÷ orders.", "amber" if overall_esc_rate >= 3.0 else "green")
+    with c4: 
+        lbl_def_name = "Post Defect %" if analysis_mode == "Post Delivery" else "Pre Defect %"
+        kpi(lbl_def_name, f"{overall_defect_rate}%", "Quality issues ÷ orders.", "red" if overall_defect_rate >= 1.5 else "green")
+    with c5: 
+        kpi("Peak Week", str(kpis['spike_week']), "Highest volume week.", "purple")
 
 st.divider()
 
@@ -380,7 +407,10 @@ with tab1:
         elif b_sort_choice == "A → Z":
             disp_b = disp_b.sort_values("brand", ascending=True)
 
-        st.dataframe(disp_b[["brand", "delivered", "tickets", "esc_pct", "defect_rate", "weighted_esc", "confidence", "Top Escalation Driver", "impact"]], use_container_width=True)
+        if analysis_mode == "Combined":
+            st.dataframe(disp_b[["brand", "delivered_pre", "delivered_post", "tickets_pre", "tickets_post", "pre_esc_pct", "post_esc_pct", "post_defect_rate", "impact"]], use_container_width=True)
+        else:
+            st.dataframe(disp_b[["brand", "delivered", "tickets", "esc_pct", "defect_rate", "weighted_esc", "confidence", "Top Escalation Driver", "impact"]], use_container_width=True)
     else:
         st.info("No brand profiles match selected filters.")
 
@@ -425,7 +455,10 @@ with tab2:
         disp_p = disp_p[disp_p["delivered"] >= p_min_del]
         
     if not disp_p.empty:
-        st.dataframe(disp_p[["brand", "canonical_product", "delivered", "tickets", "esc_pct", "Primary Ticket Source Month", "Same Month Tickets", "Previous Month Tickets", "Older Tickets", "Ticket Aging Category", "impact"]], use_container_width=True)
+        if analysis_mode == "Combined":
+            st.dataframe(disp_p[["brand", "canonical_product", "delivered_pre", "delivered_post", "tickets_pre", "tickets_post", "pre_esc_pct", "post_esc_pct", "Ticket Aging Category", "impact"]], use_container_width=True)
+        else:
+            st.dataframe(disp_p[["brand", "canonical_product", "delivered", "tickets", "esc_pct", "Primary Ticket Source Month", "Same Month Tickets", "Previous Month Tickets", "Older Tickets", "Ticket Aging Category", "impact"]], use_container_width=True)
     else:
         st.info("No product profiles match selected filters.")
 
