@@ -1,6 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
+Fixed: Aligned ticket filtering with Ticket Month and orders with Delivery Month.
 """
 import streamlit as st
 import pandas as pd
@@ -171,11 +172,13 @@ else:
         # Check if selected_period is a precise single date (e.g. "May 14, 2026")
         parsed_date = pd.to_datetime(selected_period, format="%B %d, %Y")
         f_del = del_df[pd.to_datetime(del_df["raw_date"], errors="coerce").dt.date == parsed_date.date()].copy()
-        f_tick = tick_df[pd.to_datetime(tick_df["Delivery Date"], errors="coerce").dt.date == parsed_date.date()].copy()
+        # Tickets strictly filtered by Ticket Creation Date for exact matching
+        f_tick = tick_df[pd.to_datetime(tick_df["raw_date"], errors="coerce").dt.date == parsed_date.date()].copy()
     except Exception:
         # Fallback to Month matching (e.g. "May 2026")
         f_del = del_df[del_df["Delivery Month"] == selected_period].copy()
-        f_tick = tick_df[tick_df["Delivery Month"] == selected_period].copy()
+        # Tickets strictly filtered by Ticket Creation Month (Ticket Month) for 100% operational matching
+        f_tick = tick_df[tick_df["Ticket Month"] == selected_period].copy()
 
 
 # ── DATE DIAGNOSTICS FOR QUALITY ASSURANCE ──
