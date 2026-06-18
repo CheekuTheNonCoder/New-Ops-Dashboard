@@ -1,6 +1,6 @@
 """
 engine_normalize.py — Brand & Product Normalization Registry (v4.0)
-Standardizes messy inputs using canonical mappings and multi-pass fuzzy string groupings.
+Standardizes brand name mappings and groups product listings.
 """
 import re
 import difflib
@@ -81,7 +81,6 @@ BRAND_ALIASES = {
     "sanfe": "Sanfe",
     "redroomtechnology private limited": "Redroom Technology",
     "sanatan santaram gupta": "SANATAN SANTARAM GUPTA",
-    "order status": None,
 }
 
 STOPWORDS = {
@@ -92,7 +91,6 @@ STOPWORDS = {
 
 
 def normalize_brand_name(raw):
-    """Parses and normalizes raw brand names using strict alias matching."""
     if not isinstance(raw, str):
         return "Unmapped Brand"
     cleaned = raw.strip().strip('"').strip("'")
@@ -100,8 +98,6 @@ def normalize_brand_name(raw):
         return "Unmapped Brand"
         
     brand_lower = cleaned.lower()
-    
-    # Substring safeguard logic
     if "zivx" in brand_lower or "ziv-x" in brand_lower or ("ziv" in brand_lower and "x" in brand_lower):
         return "ZivX"
         
@@ -117,7 +113,7 @@ def normalize_brand_name(raw):
 
 
 def clean_product_name(name):
-    """Strips brackets, punctuation, extra white spaces, and common stop words."""
+    """Product Cleaning: lowercase, remove brackets, punctuation, extra spaces & stopwords."""
     if not isinstance(name, str):
         return ""
     s = name.lower()
@@ -129,14 +125,13 @@ def clean_product_name(name):
 
 
 def has_keyword_overlap(s1, s2):
-    """Verifies if two product names share at least one alphabetic keyword."""
+    """Keyword overlap validation: checks if both names share at least one alphabetic token."""
     tokens1 = {t for t in s1.split() if t.isalpha() and len(t) > 1}
     tokens2 = {t for t in s2.split() if t.isalpha() and len(t) > 1}
     return len(tokens1 & tokens2) > 0
 
 
 def extract_sku(raw):
-    """Uses regex rules to extract product SKU identifiers."""
     if not isinstance(raw, str):
         return None
     patterns = [
@@ -187,7 +182,7 @@ class ProductRegistry:
             self.raw_tickets[brand_str].add(raw_clean)
 
     def resolve(self):
-        """Resolves raw product names into canonical groups sorted by sales volume."""
+        """Step 5 — 2-pass Brand-aware volume matching."""
         self.debug_log = []
         self.resolved_map = {}
         self.final_groups = {}
@@ -227,7 +222,7 @@ class ProductRegistry:
                         "Raw Product": raw_name,
                         "Canonical Product": raw_name,
                         "Confidence": 100.0,
-                        "Mapping Method": "Direct Fallback"
+                        "Mapping Method": "Direct Fallback (Empty Norm)"
                     })
                     continue
                 
@@ -259,7 +254,7 @@ class ProductRegistry:
                             best_match = cname
                 
                 matched = False
-                method = "New Product Group"
+                method = "New Product Created"
                 
                 if best_match:
                     if best_score >= 90:
@@ -269,13 +264,13 @@ class ProductRegistry:
                     elif 80 <= best_score < 90:
                         if has_keyword_overlap(norm, canonical_products[best_match]["norm"]):
                             matched = True
-                            method = "Auto Match (80-89: Overlap)"
+                            method = "Auto Match (80-89: Overlap Passed)"
                             self.auto_matched_count += 1
                         else:
-                            method = "Manual Review Needed (80-89)"
+                            method = "Manual Review Required (80-89: No Overlap)"
                             self.manual_review_count += 1
                     else:
-                        method = "Manual Review Needed (<80)"
+                        method = "Manual Review Required (<80)"
                         self.manual_review_count += 1
                 
                 if matched:
