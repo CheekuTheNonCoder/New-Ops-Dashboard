@@ -1,6 +1,6 @@
 """
-engine_loader.py — Time Intelligence & Loader Pipeline (v4.0)
-Parses dates, handles cohort calculations, and maps unmapped brand tickets.
+engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
+Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
 """
 import io
 import pandas as pd
@@ -15,7 +15,7 @@ from engine_redistribute import (
 
 
 def _detect_col(df, keywords, fallback=0):
-    """Detects column names safely by matching keywords."""
+    """Detects column names safely by matching keywords with fallback indexes."""
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
     for kw in keywords:
         for col_l, col in cols_lower.items():
@@ -23,7 +23,7 @@ def _detect_col(df, keywords, fallback=0):
                 return col
                 
     if len(df.columns) == 0:
-        raise ValueError("The uploaded dataset has no columns.")
+        raise ValueError("The operational dataset has no columns.")
     if fallback is None or fallback >= len(df.columns):
         return df.columns[-1]
         
@@ -31,10 +31,8 @@ def _detect_col(df, keywords, fallback=0):
 
 
 def parse_date_hierarchy(df, col_name, prefix):
-    """Generates standard calendar hierarchies with pre-1975 epoch safeguards."""
+    """Generates Date, Week, Month, Quarter, and Year columns dynamically with epoch checks."""
     dt_series = pd.to_datetime(df[col_name], errors="coerce")
-    
-    # Cleanse far-past epoch noise
     dt_series = dt_series.apply(lambda x: pd.NaT if pd.notna(x) and x.year < 1975 else x)
     
     df[f"{prefix} Date"] = dt_series.dt.date
@@ -43,9 +41,7 @@ def parse_date_hierarchy(df, col_name, prefix):
     df[f"{prefix} Year"] = dt_series.apply(lambda x: int(x.year) if pd.notna(x) else "Unknown Year")
     df[f"{prefix} Quarter"] = dt_series.apply(lambda x: f"{x.year}-Q{x.quarter}" if pd.notna(x) else "Unknown Quarter")
     df[f"{prefix} Month"] = dt_series.apply(lambda x: x.strftime("%B %Y") if pd.notna(x) else "Unknown Month")
-    
-    # Chronological sort period configuration
-    df[f"{prefix} Month Sort"] = dt_series.dt.to_period("M").fillna(pd.Period("2099-12", "M"))
+    df[f"{prefix} Month Sort"] = dt_series.dt.to_period("M")
     
     df[f"{prefix} Week"] = dt_series.apply(
         lambda d: f"{d.strftime('%b %Y')} Wk{min((d.day - 1) // 7 + 1, 4)}" if pd.notna(d) else "Unknown Week"
@@ -53,8 +49,40 @@ def parse_date_hierarchy(df, col_name, prefix):
     return df
 
 
+def generate_dynamic_periods(df, date_col="raw_date"):
+    """
+    Dynamically extracts periods based strictly on uploaded dates.
+    Returns exact single date string if 1 unique date is present, otherwise month-year lists.
+    """
+    if df.empty or date_col not in df.columns:
+        return ["All Data"]
+        
+    dt_series = pd.to_datetime(df[date_col], errors="coerce")
+    dt_series = dt_series[dt_series.notna() & (dt_series.dt.year >= 1975)]
+    
+    if dt_series.empty:
+        return ["All Data"]
+        
+    unique_dates = dt_series.dt.date.unique()
+    if len(unique_dates) == 1:
+        single_str = unique_dates[0].strftime("%B %d, %Y")
+        if ", " in single_str:
+            parts = single_str.split(", ")
+            month_day = parts[0]
+            year = parts[1]
+            m_parts = month_day.split(" ")
+            month = m_parts[0]
+            day = str(int(m_parts[1]))
+            single_str = f"{month} {day}, {year}"
+        return ["All Data", single_str]
+        
+    periods = sorted(dt_series.dt.to_period("M").unique())
+    options = ["All Data"] + [p.strftime("%B %Y") for p in periods]
+    return options
+
+
 def normalize_ticket_category(val):
-    """Maps raw ticket strings to clean Pre-Delivery or Post-Delivery categories."""
+    """Normalizes ticket strings cleanly to PRE_DELIVERY or POST_DELIVERY."""
     if not isinstance(val, str):
         return "POST_DELIVERY"
     s = val.strip().upper().replace("-", " ").replace("_", " ")
@@ -66,7 +94,7 @@ def normalize_ticket_category(val):
 
 
 def load_delivered(df_or_bytes):
-    """Processes Delivered Orders datasets cleanly from DataFrames or Excel bytes."""
+    """Processes Delivered Orders datasets mapping exact zop_id column configurations."""
     if isinstance(df_or_bytes, pd.DataFrame):
         df = df_or_bytes.copy()
     else:
@@ -74,30 +102,28 @@ def load_delivered(df_or_bytes):
         
     df.columns = [str(c).strip() for c in df.columns]
     
-    date_col = _detect_col(df, ["order_delivered_at", "delivered_at", "date"], 0)
-    brand_col = _detect_col(df, ["company", "brand", "seller"], 3)
+    # Mapping for exact order schema: order_created_at, order_status, zop_id, company_name, Product name
+    date_col = next((c for c in df.columns if c == "order_created_at"), None) or _detect_col(df, ["order_created_at", "created_at", "date"], 0)
+    status_col = next((c for c in df.columns if c == "order_status"), None) or _detect_col(df, ["order_status", "status"], 1)
+    order_col = next((c for c in df.columns if c == "zop_id"), None) or _detect_col(df, ["zop_id", "order_id", "order id"], 2)
+    brand_col = next((c for c in df.columns if "company_name" in c), None) or _detect_col(df, ["company_name", "brand", "seller"], 3)
     prod_col = _detect_col(df, ["product"], 4)
-    order_col = _detect_col(df, ["order_id", "orderid", "order id"], 1)
-    status_col = _detect_col(df, ["status", "order_status", "delivery_status", "state"], None)
     
     out = pd.DataFrame({
         "order_id": df[order_col].astype(str).str.strip(),
         "raw_date": df[date_col],
         "raw_brand": df[brand_col].astype(str).str.strip().str.strip('"'),
         "raw_product": df[prod_col].astype(str).str.strip().str.strip('"'),
+        "order_status": df[status_col].astype(str).str.strip() if status_col else "delivered"
     })
     
-    if status_col:
-        out["is_delivered"] = df[status_col].astype(str).str.strip().str.lower() == "delivered"
-    else:
-        out["is_delivered"] = True
-        
+    out["is_delivered"] = out["order_status"].str.lower() == "delivered"
     out = parse_date_hierarchy(out, "raw_date", "Delivery")
     return out
 
 
 def load_tickets(df_or_bytes):
-    """Processes Tickets datasets cleanly from DataFrames or Excel bytes."""
+    """Processes Support Ticket datasets mapping exact OrderID schema rules."""
     if isinstance(df_or_bytes, pd.DataFrame):
         df = df_or_bytes.copy()
     else:
@@ -105,12 +131,13 @@ def load_tickets(df_or_bytes):
         
     df.columns = [str(c).strip() for c in df.columns]
     
-    date_col = _detect_col(df, ["created_at", "createdatdate", "date"], 0)
-    brand_col = _detect_col(df, ["company", "brand"], 4)
-    prod_col = _detect_col(df, ["product"], 3)
-    order_col = _detect_col(df, ["order_id", "orderid", "order id"], 1)
-    subcat_col = _detect_col(df, ["sub-category", "subcategory", "sub_cat", "sub cat", "ticket sub"], 6)
-    cat_col = _detect_col(df, ["category", "ticket_category", "ticket_class", "type"], None)
+    # Exact mappings for: createdAtDate, customerId, OrderID, Product name, COMPANY NAME, Ticket Category, Ticket Sub-Category
+    date_col = next((c for c in df.columns if c == "createdAtDate"), None) or _detect_col(df, ["createdAtDate", "created_at", "date"], 0)
+    order_col = next((c for c in df.columns if c == "OrderID"), None) or _detect_col(df, ["OrderID", "order_id", "order id"], 2)
+    prod_col = next((c for c in df.columns if c == "Product name"), None) or _detect_col(df, ["Product name", "product"], 3)
+    brand_col = next((c for c in df.columns if c == "COMPANY NAME"), None) or _detect_col(df, ["COMPANY NAME", "company", "brand"], 4)
+    cat_col = next((c for c in df.columns if c == "Ticket Category"), None) or _detect_col(df, ["Ticket Category", "category"], 5)
+    subcat_col = next((c for c in df.columns if c == "Ticket Sub-Category"), None) or _detect_col(df, ["Ticket Sub-Category", "sub-category", "subcategory"], 6)
     
     out = pd.DataFrame({
         "order_id": df[order_col].astype(str).str.strip(),
@@ -132,7 +159,7 @@ def load_tickets(df_or_bytes):
 
 
 def process_pipeline(del_input, tick_input, rng_seed=42):
-    """Executes the loading, matching, and ticket redistribution pipeline."""
+    """Executes structural dataset loadings, matches cohorts safely, and redistributes unmapped brand tickets."""
     rng = np.random.default_rng(rng_seed)
     prog = st.progress(0)
     status = st.empty()
@@ -142,13 +169,13 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
         status.info(f"⚙️ {msg}")
 
     # ── Step 1: Loading ──
-    update(5, "Ingesting operational datasets...")
+    update(5, "Loading active operational datasets...")
     del_raw = load_delivered(del_input)
     tick_raw = load_tickets(tick_input)
     ORIGINAL_TICKET_COUNT = len(tick_raw)
 
     # ── Step 2: Normalize Brands ──
-    update(15, "Normalizing brand listings...")
+    update(15, "Normalizing brand profile listings...")
     unique_del_brands = del_raw["raw_brand"].unique()
     unique_tick_brands = tick_raw["raw_brand"].unique()
     all_unique_brands = set(unique_del_brands) | set(unique_tick_brands)
@@ -162,7 +189,7 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
     del_clean = del_raw[del_raw["brand"] != "Unmapped Brand"].copy().reset_index(drop=True)
 
     # ── Step 3: Exact Cohort Joins ──
-    update(35, "Aligning support ticket cohorts...")
+    update(35, "Aligning support ticket cohorts safely...")
     
     valid_order_mask = (
         del_clean["order_id"].notna() & 
@@ -171,14 +198,15 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
         (del_clean["order_id"].astype(str).str.len() > 3)
     )
     
-    # Deduplicate order lookup to prevent ticket volume inflation
+    # Deduplicate Order Lookup on unique Order ID (zop_id) to prevent duplicate joins
     del_lookup = del_clean[valid_order_mask].drop_duplicates(subset=["order_id"]).set_index("order_id")[
         ["Delivery Date", "Delivery Week", "Delivery Month", "Delivery Quarter", "Delivery Year", "Delivery Month Sort"]
     ]
     
+    # Join tickets on Order ID (OrderID -> zop_id)
     tick_raw = tick_raw.join(del_lookup, on="order_id", how="left")
     
-    # Fallback to ticket dates if Order ID is absent in deliveries
+    # Fallback if Order ID is absent in Delivered Orders
     tick_raw["Delivery Date"] = tick_raw["Delivery Date"].fillna(tick_raw["Ticket Date"])
     tick_raw["Delivery Week"] = tick_raw["Delivery Week"].fillna(tick_raw["Ticket Week"])
     tick_raw["Delivery Month"] = tick_raw["Delivery Month"].fillna(tick_raw["Ticket Month"])
@@ -190,7 +218,7 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
     valid_ticks = tick_raw[valid_mask].copy()
 
     # ── Step 4: Product Registry Matching ──
-    update(55, "Computing smart product mappings...")
+    update(55, "Resolving canonical products mapping...")
     registry = ProductRegistry()
     for _, row in del_clean.iterrows():
         registry.record_delivered(row["brand"], row["raw_product"])
@@ -229,7 +257,6 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
             ), axis=1
         )
 
-    # Concatenate all sets to verify that the final output matches raw input counts
     all_ticks = pd.concat([valid_ticks, dist_brand], ignore_index=True)
     val_ok = len(all_ticks) == ORIGINAL_TICKET_COUNT
 
