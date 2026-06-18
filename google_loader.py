@@ -1,6 +1,6 @@
 """
-google_loader.py — Production-grade Google Sheets Ingestion & Sync Engine (v4.0)
-Connects directly to spreadsheet ID with exponential backoff and dual-access pathways.
+google_loader.py — Production-grade Google Sheets Ingestion Engine (v4.0)
+Downloads Delivered and Tickets worksheets with retries and auth/public link fallbacks.
 """
 import io
 import json
@@ -9,7 +9,6 @@ import urllib.request
 import pandas as pd
 import streamlit as st
 
-# Safe import checking for Google Sheet API drivers
 try:
     import gspread
     from google.oauth2.service_account import Credentials
