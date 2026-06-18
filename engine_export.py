@@ -1,6 +1,7 @@
 """
-engine_export.py — Dynamic Corporate multi-sheet Exporter (v4.0)
-Constructs styled operational audit worksheets with freeze panes and formatted metrics.
+engine_export.py — Corporate-Style 17-Sheet Premium Excel Export Engine (v4.0)
+Fully Restores original luxury corporate formatting, conditional highlights, and pivots.
+Fixed: Protected the engine from KeyError on 'subcat_final' by implementing a dynamic fallback.
 """
 import io
 import pandas as pd
@@ -9,12 +10,15 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Premium Corporate Styling Palette
+# ── PREMIUM CORPORATE PALETTE ─────────────────────────────────
 NAVY   = "1F3864"; BLUE   = "2E75B6"; LTBLUE = "DBEAFE"
 RED    = "C00000"; LTRED  = "FEE2E2"; AMBER  = "C55A11"
 LTAMB  = "FEF3C7"; GREEN  = "166534"; LTGRN  = "DCFCE7"
 GRAY1  = "F8FAFC"; GRAY2  = "E2E8F0"; GRAY3  = "64748B"
 WHITE  = "FFFFFF"
+
+# Defect-only classifications
+HIGH_SUBCATS = ["Defective Product", "Damaged Product", "Low Quality Product", "Order Delay", "Order Not Shipped"]
 
 
 def _s(style="thin", color="CBD5E0"):
@@ -79,7 +83,7 @@ def _impact_style(impact):
 
 
 def dump_sheet(wb, sheet_name, title_txt, period, headers, df_data, formats=None):
-    """Generates standard tabular layout grids securely."""
+    """Generates a standard formatted worksheet dynamically."""
     ws = wb.create_sheet(sheet_name)
     _title(ws, title_txt, f"Filter Context: {period}", len(headers))
     for ci, h in enumerate(headers, 1):
@@ -99,9 +103,9 @@ def dump_sheet(wb, sheet_name, title_txt, period, headers, df_data, formats=None
 
 
 def _sheet_exec(wb, kpis, brand_sum, subcat_sum, period, orig, final, val_ok):
-    """Generates executive summaries with styled scorecards."""
+    """Generates the Executive Summary scorecard layout."""
     ws = wb.create_sheet("Executive Summary")
-    _title(ws, "EXECUTIVE SUMMARY — METRIC OVERVIEW", f"Period: {period}", 6)
+    _title(ws, "EXECUTIVE SUMMARY — PERFORMANCE OVERVIEW", f"Period: {period}", 6)
     
     kpis_list = [
         ("Base Volume", f"{kpis['total_del']:,}", NAVY),
@@ -213,6 +217,9 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     wb = Workbook()
     wb.remove(wb.active)  # Remove default active sheet
 
+    # Safe Dynamic Fallback: Resolves any potential KeyError if subcat_final is temporarily missing
+    subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
+
     # Calculate aligned segments (Pre, Post, Combined) exactly matching the dynamic selection
     post_del = del_df[del_df["is_delivered"] == True]
     post_tick = tick_df[tick_df["ticket_category"] == "POST_DELIVERY"]
@@ -232,32 +239,50 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     pre_subcat = compute_subcat_summary(pre_tick)
     post_subcat = compute_subcat_summary(post_tick)
 
-    # 1. Compute precise localized summaries metrics to guarantee absolute math alignment
+    # 1. Compute precise metrics using the dynamically resolved subcategory column
+    pre_orders_count = len(pre_del)
+    pre_tickets_count = len(pre_tick)
+    pre_esc_rate = round((pre_tickets_count / max(pre_orders_count, 1)) * 100, 2)
+    pre_defect_count = len(pre_tick[pre_tick[subcat_col].isin(HIGH_SUBCATS)]) if not pre_tick.empty else 0
+    pre_defect_rate = round((pre_defect_count / max(pre_orders_count, 1)) * 100, 2)
+    
     pre_kpis = {
-        "total_del": len(pre_del),
-        "total_tick": len(pre_tick),
-        "overall_esc": round((len(pre_tick) / max(len(pre_del), 1)) * 100, 2),
-        "overall_defect": round((len(pre_tick[pre_tick["subcat_final"].isin(HIGH_SUBCATS)]) / max(len(pre_del), 1)) * 100, 2) if not pre_tick.empty else 0,
+        "total_del": pre_orders_count,
+        "total_tick": pre_tickets_count,
+        "overall_esc": pre_esc_rate,
+        "overall_defect": pre_defect_rate,
         "spike_week": kpis.get("spike_week", "—")
     }
 
+    post_orders_count = len(post_del)
+    post_tickets_count = len(post_tick)
+    post_esc_rate = round((post_tickets_count / max(post_orders_count, 1)) * 100, 2)
+    post_defect_count = len(post_tick[post_tick[subcat_col].isin(HIGH_SUBCATS)]) if not post_tick.empty else 0
+    post_defect_rate = round((post_defect_count / max(post_orders_count, 1)) * 100, 2)
+    
     post_kpis = {
-        "total_del": len(post_del),
-        "total_tick": len(post_tick),
-        "overall_esc": round((len(post_tick) / max(len(post_del), 1)) * 100, 2),
-        "overall_defect": round((len(post_tick[post_tick["subcat_final"].isin(HIGH_SUBCATS)]) / max(len(post_del), 1)) * 100, 2) if not post_tick.empty else 0,
+        "total_del": post_orders_count,
+        "total_tick": post_tickets_count,
+        "overall_esc": post_esc_rate,
+        "overall_defect": post_defect_rate,
         "spike_week": kpis.get("spike_week", "—")
     }
 
+    comb_orders_count = len(del_df)
+    comb_tickets_count = len(tick_df)
+    comb_esc_rate = round((comb_tickets_count / max(comb_orders_count, 1)) * 100, 2)
+    comb_defect_count = len(tick_df[tick_df[subcat_col].isin(HIGH_SUBCATS)]) if not tick_df.empty else 0
+    comb_defect_rate = round((comb_defect_count / max(comb_orders_count, 1)) * 100, 2)
+    
     comb_kpis = {
-        "total_del": len(del_df),
-        "total_tick": len(tick_df),
-        "overall_esc": round((len(tick_df) / max(len(del_df), 1)) * 100, 2),
-        "overall_defect": round((len(tick_df[tick_df["subcat_final"].isin(HIGH_SUBCATS)]) / max(len(del_df), 1)) * 100, 2) if not tick_df.empty else 0,
+        "total_del": comb_orders_count,
+        "total_tick": comb_tickets_count,
+        "overall_esc": comb_esc_rate,
+        "overall_defect": comb_defect_rate,
         "spike_week": kpis.get("spike_week", "—")
     }
 
-    # ── SHEET 1: Executive Summary (matches dynamic UI dashboard tab selection) ──
+    # ── SHEET 1: Executive Summary ──
     _sheet_exec(wb, kpis, brand_sum, subcat_sum, period, orig_tickets, final_tickets, val_ok)
     
     # ── SHEET 2: Pre Delivery Summary ──
@@ -304,10 +329,17 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     _autofit(ws)
 
     # ── SHEET 15: Validation Report ──
+    # Calculate exact totals directly from the dataframe parameters
+    n_unmapped_calc = int(tick_df["_redistributed"].sum()) if "_redistributed" in tick_df.columns else 0
+    n_not_found_calc = int((tick_df["raw_subcat"] == "Not Found").sum()) if "raw_subcat" in tick_df.columns else 0
+    n_need_details_calc = int((tick_df["raw_subcat"] == "Need Details").sum()) if "raw_subcat" in tick_df.columns else 0
+
     _sheet_validation_report(
         wb, orig_tickets, final_tickets, val_ok, 
-        n_unmapped=int(brand_sum["tickets"].sum() - len(tick_df[tick_df["brand"] != "Unmapped Brand"])), 
-        n_need_details=0, n_not_found=0, period=period
+        n_unmapped=n_unmapped_calc, 
+        n_need_details=n_need_details_calc, 
+        n_not_found=n_not_found_calc, 
+        period=period
     )
 
     # ── SHEET 16: Redistribution Summary ──
