@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Implemented safe_parse_datetime to correctly resolve DD-MM-YYYY date formats.
+Fixed: Calibrated dayfirst=True and format="mixed" together to handle European DD-MM-YYYY formats.
 """
 import io
 import pandas as pd
@@ -36,13 +36,12 @@ def safe_parse_datetime(series):
     Robustly parses date series handling European day-first format, 
     standard formats, and mixed formats safely.
     """
-    # Try parsing with format="mixed" first (Pandas 2.0+ standard)
-    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
-    # For remaining nulls, try parsing with dayfirst=True fallback
-    if parsed.isna().any():
-        fallback = pd.to_datetime(series, errors="coerce", dayfirst=True)
-        parsed = parsed.fillna(fallback)
-    return parsed
+    try:
+        # Enforce dayfirst=True directly with mixed format to prevent warning coercion
+        return pd.to_datetime(series, errors="coerce", format="mixed", dayfirst=True)
+    except Exception:
+        # Fallback to standard dayfirst parsing
+        return pd.to_datetime(series, errors="coerce", dayfirst=True)
 
 
 def parse_date_hierarchy(df, col_name, prefix):
