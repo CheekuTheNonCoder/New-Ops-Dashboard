@@ -1,6 +1,7 @@
 """
 engine_export.py — Premium Dynamic Exporter (v4.0)
 Constructs formatted multi-sheet Excel workbooks matching dashboard totals exactly.
+Fixed: Integrated segment-aware columns logic for both Combined and Single Mode sheets.
 """
 import io
 import pandas as pd
@@ -103,7 +104,7 @@ def dump_sheet(wb, sheet_name, title_txt, period, headers, df_data, formats=None
 def _sheet_exec(wb, kpis, brand_sum, subcat_sum, period, orig, final, val_ok):
     """Generates styled executive scorecards and tables."""
     ws = wb.create_sheet("Executive Summary")
-    _title(ws, "EXECUTIVE SUMMARY — PERFORMANCE OVERVIEW", f"Period: {period}", 6)
+    _title(ws, "EXECUTIVE SUMMARY — METRIC OVERVIEW", f"Period: {period}", 6)
     
     kpis_list = [
         ("Base Volume", f"{kpis['total_del']:,}", NAVY),
@@ -154,17 +155,30 @@ def _sheet_exec(wb, kpis, brand_sum, subcat_sum, period, orig, final, val_ok):
 
 
 def _sheet_brand_analytics_generic(wb, name, title, brand_sum, period):
-    dump_sheet(wb, name, title, period,
-               ["Brand", "Orders Volume", "Volume % Share", "Tickets", "Ticket % Share", "Escalation %", "Defect %", "Weighted Escalation %", "Confidence %", "Primary Issue", "Impact"],
-               brand_sum[["brand", "delivered", "del_share", "tickets", "tick_share", "esc_pct", "defect_rate", "weighted_esc", "confidence", "Top Escalation Driver", "impact"]],
-               {"delivered": "#,##0", "tickets": "#,##0", "esc_pct": "0.0%", "defect_rate": "0.0%", "weighted_esc": "0.0%", "confidence": '0"%"'})
+    # Dynamic checks to verify if brand_sum is in Combined Mode format
+    if "delivered_pre" in brand_sum.columns:
+        headers = ["Brand", "All Orders (Pre)", "Delivered Orders (Post)", "Pre Tickets", "Post Tickets", "Pre Escalation %", "Post Escalation %", "Post Defect %", "Strategic Impact"]
+        cols_to_use = ["brand", "delivered_pre", "delivered_post", "tickets_pre", "tickets_post", "pre_esc_pct", "post_esc_pct", "post_defect_rate", "impact"]
+        formats = {"delivered_pre": "#,##0", "delivered_post": "#,##0", "tickets_pre": "#,##0", "tickets_post": "#,##0", "pre_esc_pct": "0.0%", "post_esc_pct": "0.0%", "post_defect_rate": "0.0%"}
+    else:
+        headers = ["Brand", "Orders Volume", "Volume % Share", "Tickets", "Ticket % Share", "Escalation %", "Defect %", "Weighted Escalation %", "Confidence %", "Primary Issue", "Impact"]
+        cols_to_use = ["brand", "delivered", "del_share", "tickets", "tick_share", "esc_pct", "defect_rate", "weighted_esc", "confidence", "Top Escalation Driver", "impact"]
+        formats = {"delivered": "#,##0", "tickets": "#,##0", "esc_pct": "0.0%", "defect_rate": "0.0%", "weighted_esc": "0.0%", "confidence": '0"%"'}
+        
+    dump_sheet(wb, name, title, period, headers, brand_sum[cols_to_use], formats)
 
 
 def _sheet_product_analytics_generic(wb, name, title, prod_sum, period):
-    dump_sheet(wb, name, title, period,
-               ["Brand", "Product Name", "Orders Volume", "Tickets", "Escalation %", "Weighted Escalation %", "Confidence %", "Primary Source Month", "Same Month", "Prev Month", "Older Tickets", "Aging Category", "Impact"],
-               prod_sum[["brand", "canonical_product", "delivered", "tickets", "esc_pct", "weighted_esc", "confidence", "Primary Ticket Source Month", "Same Month Tickets", "Previous Month Tickets", "Older Tickets", "Ticket Aging Category", "impact"]],
-               {"delivered": "#,##0", "tickets": "#,##0", "esc_pct": "0.0%", "weighted_esc": "0.0%", "confidence": '0"%"'})
+    if "delivered_pre" in prod_sum.columns:
+        headers = ["Brand", "Product Name", "All Orders (Pre)", "Delivered Orders (Post)", "Pre Tickets", "Post Tickets", "Pre Escalation %", "Post Escalation %", "Ticket Aging Category", "Impact"]
+        cols_to_use = ["brand", "canonical_product", "delivered_pre", "delivered_post", "tickets_pre", "tickets_post", "pre_esc_pct", "post_esc_pct", "Ticket Aging Category", "impact"]
+        formats = {"delivered_pre": "#,##0", "delivered_post": "#,##0", "tickets_pre": "#,##0", "tickets_post": "#,##0", "pre_esc_pct": "0.0%", "post_esc_pct": "0.0%"}
+    else:
+        headers = ["Brand", "Product Name", "Orders Volume", "Tickets", "Escalation %", "Weighted Escalation %", "Confidence %", "Primary Source Month", "Same Month", "Prev Month", "Older Tickets", "Aging Category", "Impact"]
+        cols_to_use = ["brand", "canonical_product", "delivered", "tickets", "esc_pct", "weighted_esc", "confidence", "Primary Ticket Source Month", "Same Month Tickets", "Previous Month Tickets", "Older Tickets", "Ticket Aging Category", "impact"]
+        formats = {"delivered": "#,##0", "tickets": "#,##0", "esc_pct": "0.0%", "weighted_esc": "0.0%", "confidence": '0"%"'}
+        
+    dump_sheet(wb, name, title, period, headers, prod_sum[cols_to_use], formats)
 
 
 def _sheet_issue_generic(wb, name, title, subcat_sum, period):
@@ -227,11 +241,11 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     
     from engine_analytics import compute_brand_summary, compute_product_summary, compute_subcat_summary
     
-    pre_brand = compute_brand_summary(del_df=pre_del, tick_df=pre_tick) if not pre_tick.empty else brand_sum.copy()
-    post_brand = compute_brand_summary(del_df=post_del, tick_df=post_tick) if not post_tick.empty else brand_sum.copy()
+    pre_brand = compute_brand_summary(del_df=pre_del, tick_df=pre_tick, analysis_mode="Pre Delivery")
+    post_brand = compute_brand_summary(del_df=post_del, tick_df=post_tick, analysis_mode="Post Delivery")
     
-    pre_prod = compute_product_summary(del_df=pre_del, tick_df=pre_tick) if not pre_tick.empty else prod_sum.copy()
-    post_prod = compute_product_summary(del_df=post_del, tick_df=post_tick) if not post_tick.empty else prod_sum.copy()
+    pre_prod = compute_product_summary(del_df=pre_del, tick_df=pre_tick, analysis_mode="Pre Delivery")
+    post_prod = compute_product_summary(del_df=post_del, tick_df=post_tick, analysis_mode="Post Delivery")
     
     pre_subcat = compute_subcat_summary(pre_tick)
     post_subcat = compute_subcat_summary(post_tick)
