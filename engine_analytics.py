@@ -1,7 +1,7 @@
 """
-engine_analytics.py — Advanced Analytical, Scoring, Cohort & Risk Engine (v4.0)
-Calculates brand/product escalation metrics, weighted esc %, and ticket aging categories.
-Strictly calculates unique Delivered Orders and Pre/Post denominators to prevent duplication.
+engine_analytics.py — Advanced Analytical & Segment Scoring Engine (v4.0)
+Calculates brand/product escalation metrics with separate Pre and Post denominators.
+Strictly uses unique Order ID (nunique) calculations to prevent duplication.
 """
 import pandas as pd
 import numpy as np
@@ -13,7 +13,7 @@ LOW_SUBCATS = ["Colour Issue", "Size issue", "Quantity Mismatch", "Order Modific
 
 
 def confidence_factor(delivered):
-    """Returns a confidence multiplier 0.0–1.0 based on delivery volume."""
+    """Returns a confidence multiplier 0.0–1.0 based on order volume."""
     if delivered >= 500:  return 1.00
     if delivered >= 300:  return 0.90
     if delivered >= 200:  return 0.80
@@ -38,37 +38,113 @@ def raw_esc(tickets, delivered):
     return round((tickets / delivered) * 100, 2)
 
 
-def compute_brand_summary(del_df, tick_df,
+def compute_brand_summary(del_df, tick_df, analysis_mode,
                           crit_del=300, crit_esc=7.0, crit_tix=25,
                           high_del=200, high_esc=5.0,
                           med_del=100, med_esc=3.0):
-    """Calculates active brand profiles with exact unique order denominators."""
-    # Enforce unique order counts strictly (zop_id) rather than row size
+    """Calculates active brand profiles with exact dynamic segment denominators."""
     order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
-    brand_del = del_df.groupby("brand")[order_col].nunique().reset_index(name="delivered")
-    brand_tick = tick_df.groupby("brand").size().reset_index(name="tickets")
-    
     subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
+    status_col = "order_status" if "order_status" in del_df.columns else None
     
-    defect_tix = tick_df[tick_df[subcat_col].isin(HIGH_SUBCATS)]
-    brand_defect = defect_tix.groupby("brand").size().reset_index(name="defect_tickets")
-    
-    df = brand_del.merge(brand_tick, on="brand", how="outer").fillna(0)
-    df = df.merge(brand_defect, on="brand", how="left").fillna(0)
-    
-    df["brand"] = df["brand"].astype(str)
-    df["delivered"] = df["delivered"].astype(int)
-    df["tickets"] = df["tickets"].astype(int)
-    df["defect_tickets"] = df["defect_tickets"].fillna(0).astype(int)
-    
-    df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
-    df["defect_rate"] = df.apply(lambda r: raw_esc(r["defect_tickets"], r["delivered"]), axis=1)
-    df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
-    df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
-    
-    df["del_share"] = (df["delivered"] / max(df["delivered"].sum(), 1) * 100).round(1)
-    df["tick_share"] = (df["tickets"] / max(df["tickets"].sum(), 1) * 100).round(1)
-    
+    if analysis_mode == "Post Delivery":
+        # Denominator: Unique Delivered Orders only (Status == Delivered)
+        if status_col:
+            orders_universe = del_df[del_df[status_col].astype(str).str.strip().str.lower() == "delivered"]
+        else:
+            orders_universe = del_df
+            
+        ticks_universe = tick_df[tick_df["ticket_category"] == "POST_DELIVERY"] if not tick_df.empty else tick_df
+        
+        brand_del = orders_universe.groupby("brand")[order_col].nunique().reset_index(name="delivered")
+        brand_tick = ticks_universe.groupby("brand").size().reset_index(name="tickets")
+        
+        defect_tix = ticks_universe[ticks_universe[subcat_col].isin(HIGH_SUBCATS)] if not ticks_universe.empty else ticks_universe
+        brand_defect = defect_tix.groupby("brand").size().reset_index(name="defect_tickets")
+        
+        df = brand_del.merge(brand_tick, on="brand", how="outer").fillna(0)
+        df = df.merge(brand_defect, on="brand", how="left").fillna(0)
+        
+        df["brand"] = df["brand"].astype(str)
+        df["delivered"] = df["delivered"].astype(int)
+        df["tickets"] = df["tickets"].astype(int)
+        df["defect_tickets"] = df["defect_tickets"].fillna(0).astype(int)
+        
+        df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
+        df["defect_rate"] = df.apply(lambda r: raw_esc(r["defect_tickets"], r["delivered"]), axis=1)
+        df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
+        df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
+        
+        df["del_share"] = (df["delivered"] / max(df["delivered"].sum(), 1) * 100).round(1)
+        df["tick_share"] = (df["tickets"] / max(df["tickets"].sum(), 1) * 100).round(1)
+        
+    elif analysis_mode == "Pre Delivery":
+        # Denominator: Unique Orders across all statuses
+        orders_universe = del_df
+        ticks_universe = tick_df[tick_df["ticket_category"] == "PRE_DELIVERY"] if not tick_df.empty else tick_df
+        
+        brand_del = orders_universe.groupby("brand")[order_col].nunique().reset_index(name="delivered")
+        brand_tick = ticks_universe.groupby("brand").size().reset_index(name="tickets")
+        
+        df = brand_del.merge(brand_tick, on="brand", how="outer").fillna(0)
+        df["brand"] = df["brand"].astype(str)
+        df["delivered"] = df["delivered"].astype(int)
+        df["tickets"] = df["tickets"].astype(int)
+        
+        df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
+        df["defect_rate"] = 0.0
+        df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
+        df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
+        
+        df["del_share"] = (df["delivered"] / max(df["delivered"].sum(), 1) * 100).round(1)
+        df["tick_share"] = (df["tickets"] / max(df["tickets"].sum(), 1) * 100).round(1)
+        
+    else:  # Combined Mode (Calculates BOTH Pre and Post separately)
+        if status_col:
+            del_orders = del_df[del_df[status_col].astype(str).str.strip().str.lower() == "delivered"]
+        else:
+            del_orders = del_df
+            
+        post_tix = tick_df[tick_df["ticket_category"] == "POST_DELIVERY"] if not tick_df.empty else tick_df
+        post_defect_tix = post_tix[post_tix[subcat_col].isin(HIGH_SUBCATS)] if not post_tix.empty else post_tix
+        
+        all_orders = del_df
+        pre_tix = tick_df[tick_df["ticket_category"] == "PRE_DELIVERY"] if not tick_df.empty else tick_df
+        
+        brand_del_post = del_orders.groupby("brand")[order_col].nunique().reset_index(name="delivered_post")
+        brand_tick_post = post_tix.groupby("brand").size().reset_index(name="tickets_post")
+        brand_defect_post = post_defect_tix.groupby("brand").size().reset_index(name="defect_tickets_post")
+        
+        brand_del_pre = all_orders.groupby("brand")[order_col].nunique().reset_index(name="delivered_pre")
+        brand_tick_pre = pre_tix.groupby("brand").size().reset_index(name="tickets_pre")
+        
+        # Outer merge all segments
+        df = brand_del_pre.merge(brand_del_post, on="brand", how="outer").fillna(0)
+        df = df.merge(brand_tick_pre, on="brand", how="outer").fillna(0)
+        df = df.merge(brand_tick_post, on="brand", how="outer").fillna(0)
+        df = df.merge(brand_defect_post, on="brand", how="left").fillna(0)
+        
+        df["brand"] = df["brand"].astype(str)
+        df["delivered_pre"] = df["delivered_pre"].astype(int)
+        df["delivered_post"] = df["delivered_post"].astype(int)
+        df["tickets_pre"] = df["tickets_pre"].astype(int)
+        df["tickets_post"] = df["tickets_post"].astype(int)
+        df["defect_tickets_post"] = df["defect_tickets_post"].fillna(0).astype(int)
+        
+        df["pre_esc_pct"] = df.apply(lambda r: raw_esc(r["tickets_pre"], r["delivered_pre"]), axis=1)
+        df["post_esc_pct"] = df.apply(lambda r: raw_esc(r["tickets_post"], r["delivered_post"]), axis=1)
+        df["post_defect_rate"] = df.apply(lambda r: raw_esc(r["defect_tickets_post"], r["delivered_post"]), axis=1)
+        
+        # Unified fallback fields for backwards schema compatibility
+        df["delivered"] = df["delivered_pre"]
+        df["tickets"] = df["tickets_pre"] + df["tickets_post"]
+        df["esc_pct"] = df["post_esc_pct"]
+        df["defect_rate"] = df["post_defect_rate"]
+        df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
+        df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
+        df["del_share"] = (df["delivered"] / max(df["delivered"].sum(), 1) * 100).round(1)
+        df["tick_share"] = (df["tickets"] / max(df["tickets"].sum(), 1) * 100).round(1)
+
     top_drivers = {}
     for b in df["brand"]:
         b_tix = tick_df[tick_df["brand"] == b]
@@ -78,30 +154,99 @@ def compute_brand_summary(del_df, tick_df,
             top_drivers[b] = "N/A"
     df["Top Escalation Driver"] = df["brand"].map(top_drivers)
     
-    df["impact"] = df.apply(
-        lambda r: "CRITICAL" if r["delivered"] >= crit_del and r["esc_pct"] >= crit_esc and r["tickets"] >= crit_tix 
-        else "HIGH" if r["delivered"] >= high_del and r["esc_pct"] >= high_esc
-        else "MEDIUM" if r["delivered"] >= med_del and r["esc_pct"] >= med_esc
-        else "LOW", axis=1
-    )
-    
+    # Impact calculations based on dynamic segment rules
+    if analysis_mode == "Post Delivery":
+        df["impact"] = df.apply(
+            lambda r: "CRITICAL" if r["delivered"] >= crit_del and r["esc_pct"] >= crit_esc and r["tickets"] >= crit_tix 
+            else "HIGH" if r["delivered"] >= high_del and r["esc_pct"] >= high_esc
+            else "MEDIUM" if r["delivered"] >= med_del and r["esc_pct"] >= med_esc
+            else "LOW", axis=1
+        )
+    elif analysis_mode == "Pre Delivery":
+        df["impact"] = df.apply(
+            lambda r: "CRITICAL" if r["delivered"] >= crit_del and r["esc_pct"] >= crit_esc and r["tickets"] >= crit_tix 
+            else "HIGH" if r["delivered"] >= high_del and r["esc_pct"] >= high_esc
+            else "MEDIUM" if r["delivered"] >= med_del and r["esc_pct"] >= med_esc
+            else "LOW", axis=1
+        )
+    else:  # Combined Mode Impact triggers
+        df["impact"] = df.apply(
+            lambda r: "CRITICAL" if (r["post_esc_pct"] >= crit_esc and r["tickets_post"] >= crit_tix) or (r["pre_esc_pct"] >= crit_esc and r["tickets_pre"] >= crit_tix)
+            else "HIGH" if r["post_esc_pct"] >= high_esc or r["pre_esc_pct"] >= high_esc
+            else "MEDIUM" if r["post_esc_pct"] >= med_esc or r["pre_esc_pct"] >= med_esc
+            else "LOW", axis=1
+        )
+        
     return df.sort_values("tickets", ascending=False).reset_index(drop=True)
 
 
-def compute_product_summary(del_df, tick_df,
+def compute_product_summary(del_df, tick_df, analysis_mode,
                              crit_del=300, crit_esc=7.0, crit_tix=25,
                              high_del=200, high_esc=5.0,
                              med_del=100, med_esc=3.0):
     """Detailed Product-level matrix calculations using unique Order ID denominators."""
     order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
-    prod_del = del_df.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered")
-    prod_tick = tick_df.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets")
+    status_col = "order_status" if "order_status" in del_df.columns else None
     
-    df = prod_del.merge(prod_tick, on=["brand", "canonical_product"], how="outer").fillna(0)
-    df["delivered"] = df["delivered"].astype(int)
-    df["tickets"] = df["tickets"].astype(int)
-    df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
-    
+    if analysis_mode == "Post Delivery":
+        if status_col:
+            orders_universe = del_df[del_df[status_col].astype(str).str.strip().str.lower() == "delivered"]
+        else:
+            orders_universe = del_df
+        ticks_universe = tick_df[tick_df["ticket_category"] == "POST_DELIVERY"] if not tick_df.empty else tick_df
+        
+        prod_del = orders_universe.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered")
+        prod_tick = ticks_universe.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets")
+        
+        df = prod_del.merge(prod_tick, on=["brand", "canonical_product"], how="outer").fillna(0)
+        df["delivered"] = df["delivered"].astype(int)
+        df["tickets"] = df["tickets"].astype(int)
+        df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
+        
+    elif analysis_mode == "Pre Delivery":
+        orders_universe = del_df
+        ticks_universe = tick_df[tick_df["ticket_category"] == "PRE_DELIVERY"] if not tick_df.empty else tick_df
+        
+        prod_del = orders_universe.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered")
+        prod_tick = ticks_universe.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets")
+        
+        df = prod_del.merge(prod_tick, on=["brand", "canonical_product"], how="outer").fillna(0)
+        df["delivered"] = df["delivered"].astype(int)
+        df["tickets"] = df["tickets"].astype(int)
+        df["esc_pct"] = df.apply(lambda r: raw_esc(r["tickets"], r["delivered"]), axis=1)
+        
+    else:  # Combined Mode
+        if status_col:
+            del_orders = del_df[del_df[status_col].astype(str).str.strip().str.lower() == "delivered"]
+        else:
+            del_orders = del_df
+        post_tix = tick_df[tick_df["ticket_category"] == "POST_DELIVERY"] if not tick_df.empty else tick_df
+        all_orders = del_df
+        pre_tix = tick_df[tick_df["ticket_category"] == "PRE_DELIVERY"] if not tick_df.empty else tick_df
+        
+        prod_del_post = del_orders.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered_post")
+        prod_tick_post = post_tix.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets_post")
+        
+        prod_del_pre = all_orders.groupby(["brand", "canonical_product"])[order_col].nunique().reset_index(name="delivered_pre")
+        prod_tick_pre = pre_tix.groupby(["brand", "canonical_product"]).size().reset_index(name="tickets_pre")
+        
+        df = prod_del_pre.merge(prod_del_post, on=["brand", "canonical_product"], how="outer").fillna(0)
+        df = df.merge(prod_tick_pre, on=["brand", "canonical_product"], how="outer").fillna(0)
+        df = df.merge(prod_tick_post, on=["brand", "canonical_product"], how="outer").fillna(0)
+        
+        df["delivered_pre"] = df["delivered_pre"].astype(int)
+        df["delivered_post"] = df["delivered_post"].astype(int)
+        df["tickets_pre"] = df["tickets_pre"].astype(int)
+        df["tickets_post"] = df["tickets_post"].astype(int)
+        
+        df["pre_esc_pct"] = df.apply(lambda r: raw_esc(r["tickets_pre"], r["delivered_pre"]), axis=1)
+        df["post_esc_pct"] = df.apply(lambda r: raw_esc(r["tickets_post"], r["delivered_post"]), axis=1)
+        
+        # Compatibility fallbacks
+        df["delivered"] = df["delivered_pre"]
+        df["tickets"] = df["tickets_pre"] + df["tickets_post"]
+        df["esc_pct"] = df["post_esc_pct"]
+
     df["weighted_esc"] = df.apply(lambda r: weighted_esc(r["tickets"], r["delivered"]), axis=1)
     df["confidence"] = df["delivered"].apply(lambda d: round(confidence_factor(d) * 100))
     df["brand_product"] = df["brand"] + " | " + df["canonical_product"]
@@ -114,10 +259,7 @@ def compute_product_summary(del_df, tick_df,
         if not sub_ticks.empty:
             primary_cohorts[(brand, prod)] = sub_ticks["Delivery Month"].value_counts().index[0]
             
-            same_m = 0
-            prev_m = 0
-            older_m = 0
-            
+            same_m, prev_m, older_m = 0, 0, 0
             for _, row in sub_ticks.iterrows():
                 try:
                     diff_val = (row["Ticket Month Sort"] - row["Delivery Month Sort"])
