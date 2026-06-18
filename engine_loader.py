@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Implemented smart test-parsing column detectors to guarantee 100% date resolution.
+Fixed: Calibrated custom column matchers and prioritised dayfirst=True parsing.
 """
 import io
 import pandas as pd
@@ -20,7 +20,8 @@ def _detect_date_col(df):
     Intelligently scans all columns in the DataFrame to locate the most likely date column.
     Checks for keyword matches, and fallbacks to parsing columns until one succeeds with minimal NaT.
     """
-    date_keywords = ["created_at", "order_created_at", "createdatdate", "date", "time", "created", "timestamp", "day"]
+    # Enforces exact order_delivered_at, order_created_at and createdAtDate mappings
+    date_keywords = ["order_delivered_at", "order_created_at", "delivered_at", "createdatdate", "created_at", "date", "time", "created", "timestamp", "day", "delivered"]
     
     # Keyword search
     for kw in date_keywords:
@@ -57,7 +58,7 @@ def _detect_order_col(df):
 
 
 def _detect_brand_col(df):
-    brand_keywords = ["company_name", "company name", "company", "brand", "seller"]
+    brand_keywords = ["company_name", "company name", "company nam", "company", "brand", "seller"]
     for kw in brand_keywords:
         for col in df.columns:
             col_clean = str(col).lower().strip()
@@ -88,15 +89,35 @@ def _detect_status_col(df):
 
 def safe_parse_datetime(series):
     """
-    Robustly parses date series handling European day-first format, 
-    standard formats, and mixed formats safely.
+    A completely bulletproof date parser. Handles Excel serial dates, 
+    day-first string dates, and mixed formats safely with validation.
     """
+    s = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+        
+    # Check and convert numeric Excel serial dates if present
     try:
-        # Enforce dayfirst=True directly with mixed format to prevent warning coercion
-        return pd.to_datetime(series, errors="coerce", format="mixed", dayfirst=True)
+        s_numeric = pd.to_numeric(s, errors="coerce")
+        excel_mask = s_numeric.notna() & (s_numeric > 25000) & (s_numeric < 60000)
+        if excel_mask.any():
+            excel_dates = pd.to_datetime(s_numeric[excel_mask], unit="D", origin="1899-12-30")
+            s = s.astype(object)
+            s[excel_mask] = excel_dates
     except Exception:
-        # Fallback to standard dayfirst parsing
-        return pd.to_datetime(series, errors="coerce", dayfirst=True)
+        pass
+        
+    # Attempt 1: Standard dayfirst=True parsing (the absolute standard for European DD-MM-YYYY)
+    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    
+    # If standard parsing failed or yielded mostly NaT, try format="mixed"
+    if parsed.isna().sum() > len(parsed) * 0.5:
+        try:
+            parsed = pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
+        except Exception:
+            parsed = pd.to_datetime(s, errors="coerce")
+            
+    return parsed
 
 
 def parse_date_hierarchy(df, col_name, prefix):
