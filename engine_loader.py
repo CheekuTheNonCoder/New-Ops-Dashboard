@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Calibrated custom column matchers and prioritised dayfirst=True parsing.
+Fixed: Re-defined _detect_col helper globally to prevent NameError in load functions.
 """
 import io
 import pandas as pd
@@ -13,6 +13,22 @@ from engine_redistribute import (
     compute_brand_weights, redistribute_tickets,
     redistribute_subcat, build_redistribution_summary
 )
+
+
+def _detect_col(df, keywords, fallback=0):
+    """Detects column names safely by matching keywords with fallback indexes."""
+    cols_lower = {str(c).lower().strip(): c for c in df.columns}
+    for kw in keywords:
+        for col_l, col in cols_lower.items():
+            if kw.lower() in col_l:
+                return col
+                
+    if len(df.columns) == 0:
+        raise ValueError("The operational dataset has no columns.")
+    if fallback is None or fallback >= len(df.columns):
+        return df.columns[-1]
+        
+    return df.columns[fallback]
 
 
 def _detect_date_col(df):
@@ -336,7 +352,7 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
     # ── Step 5: Redistribution ──
     update(70, "Executing ticket redistribution model...")
     from engine_analytics import compute_brand_summary as _bs
-    base_brand_sum = _bs(del_clean, valid_ticks)
+    base_brand_sum = _bs(del_clean, valid_ticks, "Post Delivery")  # Backwards safe parameter
     brand_weights = compute_brand_weights(base_brand_sum, valid_ticks)
 
     dist_brand = redistribute_tickets(brand_unmapped, brand_weights, rng)
