@@ -1,6 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
+Fixed: Implemented safe_parse_datetime to correctly resolve DD-MM-YYYY date formats.
 """
 import io
 import pandas as pd
@@ -30,9 +31,23 @@ def _detect_col(df, keywords, fallback=0):
     return df.columns[fallback]
 
 
+def safe_parse_datetime(series):
+    """
+    Robustly parses date series handling European day-first format, 
+    standard formats, and mixed formats safely.
+    """
+    # Try parsing with format="mixed" first (Pandas 2.0+ standard)
+    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+    # For remaining nulls, try parsing with dayfirst=True fallback
+    if parsed.isna().any():
+        fallback = pd.to_datetime(series, errors="coerce", dayfirst=True)
+        parsed = parsed.fillna(fallback)
+    return parsed
+
+
 def parse_date_hierarchy(df, col_name, prefix):
     """Generates Date, Week, Month, Quarter, and Year columns dynamically with epoch checks."""
-    dt_series = pd.to_datetime(df[col_name], errors="coerce")
+    dt_series = safe_parse_datetime(df[col_name])
     dt_series = dt_series.apply(lambda x: pd.NaT if pd.notna(x) and x.year < 1975 else x)
     
     df[f"{prefix} Date"] = dt_series.dt.date
@@ -57,7 +72,7 @@ def generate_dynamic_periods(df, date_col="raw_date"):
     if df.empty or date_col not in df.columns:
         return ["All Data"]
         
-    dt_series = pd.to_datetime(df[date_col], errors="coerce")
+    dt_series = safe_parse_datetime(df[date_col])
     dt_series = dt_series[dt_series.notna() & (dt_series.dt.year >= 1975)]
     
     if dt_series.empty:
