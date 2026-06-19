@@ -40,7 +40,7 @@ html, body, [data-testid="stAppViewContainer"] { background: #0D1117 !important;
 .kpi { background: #161B26; border: 1px solid #21262D; border-radius: 8px; padding: 12px 14px; margin-bottom: 6px; min-height: 80px; }
 .kpi.red { border-left: 3px solid #F85149; }
 .kpi.amber { border-left: 3px solid #D29922; }
-.kpi.green { border-left: 3FB950; }
+.kpi.green { border-left: 3px solid #3FB950; }
 .kpi.blue { border-left: 3px solid #58A6FF; }
 .kpi-lbl { font-size: 10px; font-weight: 600; color: #6E7681; text-transform: uppercase; margin: 0 0 4px; }
 .kpi-val { font-size: 20px; font-weight: 700; color: #E6EDF3; margin: 0; }
@@ -251,7 +251,7 @@ with st.expander("🛠️ Developer Debugger & Data Reconciliation (Closed by De
     st.table(val_df)
 
 
-# ── RUN SEGMENT ANALYTICS ──
+# ── RUN SEGMENT ANALYTICS (KEYWORD PARAMS SAFE) ──
 brand_sum = compute_brand_summary(
     del_df=f_del_universe, 
     tick_df=f_tick_universe, 
@@ -281,12 +281,19 @@ weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
-# Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
-status_col = "order_status" if "order_status" in f_del_universe.columns else None
-
-overall_orders_count = f_del_universe["order_id"].nunique() if not f_del_universe.empty else 0
-overall_tickets_count = len(f_tick_universe)
-overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+# Aligned KPIs: Metrics scale and match the Validation Panel exactly
+if analysis_mode == "Post Delivery":
+    overall_orders_count = v_delivered_rows
+    overall_tickets_count = v_post_tickets
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+elif analysis_mode == "Pre Delivery":
+    overall_orders_count = v_all_status_rows
+    overall_tickets_count = v_pre_tickets
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+else:
+    overall_orders_count = v_all_status_rows
+    overall_tickets_count = len(f_tick_universe)
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
 subcat_col = "subcat_final" if "subcat_final" in f_tick_universe.columns else "raw_subcat"
 defect_tickets_count = len(f_tick_universe[f_tick_universe[subcat_col].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
@@ -659,7 +666,7 @@ with tab8:
 
         top10b = brand_sum.head(10)[["brand", "delivered", "tickets", "esc_pct"]].to_dict("records") if not brand_sum.empty else []
         top10p = prod_sum.head(10)[["brand", "canonical_product", "delivered", "tickets", "esc_pct"]].to_dict("records") if not prod_sum.empty else []
-        top_i  = f_tick_universe.groupby("subcat_final").size().reset_index(name="count").sort_values("count", ascending=False).head(8).to_dict("records") if not f_tick_universe.empty else []
+        top_i = f_tick_universe.groupby("subcat_final").size().reset_index(name="count").sort_values("count", ascending=False).head(8).to_dict("records") if not f_tick_universe.empty else []
 
         ai1, ai2 = st.columns(2)
         with ai1:
@@ -687,7 +694,7 @@ Ensure your recommendations reference metrics from the dataset. Maintain a busin
                         try:
                             out = call_gemini(f"""Senior Escalation Engineer.
 Active Analysis Universe Mode: {analysis_mode}
-{overall_orders_count:,} orders, {overall_tickets_count:,} tickets.
+{overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
 Top Issues: {json.dumps(top_i)}
