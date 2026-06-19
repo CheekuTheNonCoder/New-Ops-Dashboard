@@ -1,6 +1,7 @@
 """
 google_loader.py — Production-grade Google Sheets Ingestion Engine (v4.0)
-Downloads Delivered and Tickets worksheets with retries and auth/public link fallbacks.
+Downloads Orders and Tickets worksheets with retries and auth/public link fallbacks.
+Fixed: Calibrated worksheet tab name to 'Orders' to match Google Sheet structure exactly.
 """
 import io
 import json
@@ -39,7 +40,7 @@ def get_gcp_credentials():
 @st.cache_data(ttl=600, show_spinner=False)
 def load_sheet_data(sheet_id: str = SPREADSHEET_ID, max_retries: int = 3, backoff_factor: float = 1.5):
     """
-    Downloads worksheets 'Delivered' and 'Tickets' from the specified Google Sheet.
+    Downloads worksheets 'Orders' and 'Tickets' from the specified Google Sheet.
     Utilizes authenticated API connections, falling back gracefully to public CSV exports.
     """
     errs = []
@@ -53,8 +54,8 @@ def load_sheet_data(sheet_id: str = SPREADSHEET_ID, max_retries: int = 3, backof
                     client = gspread.authorize(creds)
                     sheet = client.open_by_key(sheet_id)
                     
-                    # Read 'Delivered' worksheet
-                    del_ws = sheet.worksheet("Delivered")
+                    # Read 'Orders' worksheet
+                    del_ws = sheet.worksheet("Orders")
                     del_df = get_as_dataframe(del_ws, evaluate_formulas=True, fill_value=None)
                     del_df = del_df.dropna(how="all").dropna(axis=1, how="all")
                     
@@ -71,15 +72,17 @@ def load_sheet_data(sheet_id: str = SPREADSHEET_ID, max_retries: int = 3, backof
     # Method 2: Public URL Export Fallback
     for attempt in range(max_retries):
         try:
-            del_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Delivered"
+            del_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Orders"
             tick_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Tickets"
             
             headers = {"User-Agent": "Mozilla/5.0 (OpsIntelPlatform v4.0)"}
             
+            # Fetch Orders CSV stream
             req_del = urllib.request.Request(del_url, headers=headers)
             with urllib.request.urlopen(req_del, timeout=12) as r:
                 del_df = pd.read_csv(io.BytesIO(r.read()))
                 
+            # Fetch Tickets CSV stream
             req_tick = urllib.request.Request(tick_url, headers=headers)
             with urllib.request.urlopen(req_tick, timeout=12) as r:
                 tick_df = pd.read_csv(io.BytesIO(r.read()))
