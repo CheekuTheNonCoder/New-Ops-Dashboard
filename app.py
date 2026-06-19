@@ -40,7 +40,7 @@ html, body, [data-testid="stAppViewContainer"] { background: #0D1117 !important;
 .kpi { background: #161B26; border: 1px solid #21262D; border-radius: 8px; padding: 12px 14px; margin-bottom: 6px; min-height: 80px; }
 .kpi.red { border-left: 3px solid #F85149; }
 .kpi.amber { border-left: 3px solid #D29922; }
-.kpi.green { border-left: 3px solid #3FB950; }
+.kpi.green { border-left: 3FB950; }
 .kpi.blue { border-left: 3px solid #58A6FF; }
 .kpi-lbl { font-size: 10px; font-weight: 600; color: #6E7681; text-transform: uppercase; margin: 0 0 4px; }
 .kpi-val { font-size: 20px; font-weight: 700; color: #E6EDF3; margin: 0; }
@@ -252,8 +252,30 @@ with st.expander("🛠️ Developer Debugger & Data Reconciliation (Closed by De
 
 
 # ── RUN SEGMENT ANALYTICS ──
-brand_sum = compute_brand_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
-prod_sum = compute_product_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
+brand_sum = compute_brand_summary(
+    del_df=f_del_universe, 
+    tick_df=f_tick_universe, 
+    analysis_mode=analysis_mode,
+    crit_del=int(crit_del),
+    crit_esc=float(crit_esc),
+    crit_tix=int(crit_tix),
+    high_del=int(high_del),
+    high_esc=float(high_esc),
+    med_del=int(med_del),
+    med_esc=float(med_esc)
+)
+prod_sum = compute_product_summary(
+    del_df=f_del_universe, 
+    tick_df=f_tick_universe, 
+    analysis_mode=analysis_mode,
+    crit_del=int(crit_del),
+    crit_esc=float(crit_esc),
+    crit_tix=int(crit_tix),
+    high_del=int(high_del),
+    high_esc=float(high_esc),
+    med_del=int(med_del),
+    med_esc=float(med_esc)
+)
 cohort_report = compute_cohort_report(f_del_universe, f_tick_universe)
 weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
@@ -262,7 +284,7 @@ subcat_sum = compute_subcat_summary(f_tick_universe)
 # Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
 status_col = "order_status" if "order_status" in f_del_universe.columns else None
 
-overall_orders_count = len(f_del_universe)
+overall_orders_count = f_del_universe["order_id"].nunique() if not f_del_universe.empty else 0
 overall_tickets_count = len(f_tick_universe)
 overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
@@ -288,8 +310,8 @@ if has_comparison:
     del_b = del_df[del_df["Delivery Month"] == month_b]
     tick_b = tick_df[tick_df["Delivery Month"] == month_b]
     
-    brand_a = compute_brand_summary(del_a, tick_a, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
-    brand_b = compute_brand_summary(del_b, tick_b, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand")
+    brand_a = compute_brand_summary(del_df=del_a, tick_df=tick_a, analysis_mode=analysis_mode, crit_del=crit_del, crit_esc=crit_esc, crit_tix=crit_tix, high_del=high_del, high_esc=high_esc, med_del=med_del, med_esc=med_esc).set_index("brand")
+    brand_b = compute_brand_summary(del_df=del_b, tick_df=tick_b, analysis_mode=analysis_mode, crit_del=crit_del, crit_esc=crit_esc, crit_tix=crit_tix, high_del=high_del, high_esc=high_esc, med_del=med_del, med_esc=med_esc).set_index("brand")
     
     comp_df_brand = pd.DataFrame(index=sorted(list(set(brand_a.index) | set(brand_b.index))))
     comp_df_brand["Month A Esc %"] = comp_df_brand.index.map(brand_a["esc_pct"]).fillna(0.0)
@@ -300,8 +322,8 @@ if has_comparison:
     )
     comp_df_brand = comp_df_brand.reset_index().rename(columns={"index": "Brand"})
 
-    prod_a = compute_product_summary(del_a, tick_a, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
-    prod_b = compute_product_summary(del_b, tick_b, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc).set_index("brand_product")
+    prod_a = compute_product_summary(del_df=del_a, tick_df=tick_a, analysis_mode=analysis_mode, crit_del=crit_del, crit_esc=crit_esc, crit_tix=crit_tix, high_del=high_del, high_esc=high_esc, med_del=med_del, med_esc=med_esc).set_index("brand_product")
+    prod_b = compute_product_summary(del_df=del_b, tick_df=tick_b, analysis_mode=analysis_mode, crit_del=crit_del, crit_esc=crit_esc, crit_tix=crit_tix, high_del=high_del, high_esc=high_esc, med_del=med_del, med_esc=med_esc).set_index("brand_product")
     
     comp_df_prod = pd.DataFrame(index=sorted(list(set(prod_a.index) | set(prod_b.index))))
     comp_df_prod["Month A Esc %"] = comp_df_prod.index.map(prod_a["esc_pct"]).fillna(0.0)
