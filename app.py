@@ -1,7 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
-Fixed: Aligned calculations strictly with row-count denominators and added a prominent validation panel.
+Fixed: Placed validation panel inside a collapsed developer-only debug expander.
 """
 import streamlit as st
 import pandas as pd
@@ -213,41 +213,42 @@ else:
     f_tick_universe = f_tick.copy()
 
 
-# ── RECONCILIATION VALIDATION PANEL (MANDATORY VERIFICATION) ──
-st.markdown(f"### 📋 System Verification & Data Reconciliation — {selected_period}")
+# ── COLLAPSED DEVELOPER DEBUGGER (MANDATORY VERIFICATION) ──
+# Hidden inside a closed expander by default to keep the production view clean
+with st.expander("🛠️ Developer Debugger & Data Reconciliation (Closed by Default)", expanded=False):
+    st.markdown(f"### 📋 System Verification & Data Reconciliation — {selected_period}")
+    status_col = "order_status" if "order_status" in f_del.columns else None
+    v_orders_filter = len(f_del)
+    v_delivered_rows = len(f_del[f_del[status_col].astype(str).str.strip().str.lower() == "delivered"]) if status_col else len(f_del)
+    v_all_status_rows = len(f_del)
+    v_post_tickets = len(f_tick[f_tick["ticket_category"] == "POST_DELIVERY"])
+    v_pre_tickets = len(f_tick[f_tick["ticket_category"] == "PRE_DELIVERY"])
 
-status_col = "order_status" if "order_status" in f_del.columns else None
-v_orders_filter = len(f_del)
-v_delivered_rows = len(f_del[f_del[status_col].astype(str).str.strip().str.lower() == "delivered"]) if status_col else len(f_del)
-v_all_status_rows = len(f_del)
-v_post_tickets = len(f_tick[f_tick["ticket_category"] == "POST_DELIVERY"])
-v_pre_tickets = len(f_tick[f_tick["ticket_category"] == "PRE_DELIVERY"])
+    v_post_esc = f"{v_post_tickets:,} / {v_delivered_rows:,} = {round((v_post_tickets / max(v_delivered_rows, 1)) * 100, 2)}%"
+    v_pre_esc = f"{v_pre_tickets:,} / {v_all_status_rows:,} = {round((v_pre_tickets / max(v_all_status_rows, 1)) * 100, 2)}%"
 
-v_post_esc = f"{v_post_tickets:,} / {v_delivered_rows:,} = {round((v_post_tickets / max(v_delivered_rows, 1)) * 100, 2)}%"
-v_pre_esc = f"{v_pre_tickets:,} / {v_all_status_rows:,} = {round((v_pre_tickets / max(v_all_status_rows, 1)) * 100, 2)}%"
-
-reconciliation_data = {
-    "Metric Parameter": [
-        "Orders after Month Filter",
-        "Delivered Rows (Post Denominator)",
-        "All Status Rows (Pre Denominator)",
-        "Post Tickets (Post Numerator)",
-        "Pre Tickets (Pre Numerator)",
-        "Post Escalation (Post Tickets / Delivered Rows)",
-        "Pre Escalation (Pre Tickets / All Status Rows)"
-    ],
-    "Value Count / Formula": [
-        f"{v_orders_filter:,}",
-        f"{v_delivered_rows:,}",
-        f"{v_all_status_rows:,}",
-        f"{v_post_tickets:,}",
-        f"{v_pre_tickets:,}",
-        v_post_esc,
-        v_pre_esc
-    ]
-}
-val_df = pd.DataFrame(reconciliation_data)
-st.table(val_df)
+    reconciliation_data = {
+        "Metric Parameter": [
+            "Orders after Month Filter",
+            "Delivered Rows (Post Denominator)",
+            "All Status Rows (Pre Denominator)",
+            "Post Tickets (Post Numerator)",
+            "Pre Tickets (Pre Numerator)",
+            "Post Escalation (Post Tickets / Delivered Rows)",
+            "Pre Escalation (Pre Tickets / All Status Rows)"
+        ],
+        "Value Count / Formula": [
+            f"{v_orders_filter:,}",
+            f"{v_delivered_rows:,}",
+            f"{v_all_status_rows:,}",
+            f"{v_post_tickets:,}",
+            f"{v_pre_tickets:,}",
+            v_post_esc,
+            v_pre_esc
+        ]
+    }
+    val_df = pd.DataFrame(reconciliation_data)
+    st.table(val_df)
 
 
 # ── RUN SEGMENT ANALYTICS ──
@@ -258,19 +259,12 @@ weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
-# Aligned KPIs: Metrics scale and match the Validation Panel exactly
-if analysis_mode == "Post Delivery":
-    overall_orders_count = v_delivered_rows
-    overall_tickets_count = v_post_tickets
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
-elif analysis_mode == "Pre Delivery":
-    overall_orders_count = v_all_status_rows
-    overall_tickets_count = v_pre_tickets
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
-else:
-    overall_orders_count = v_all_status_rows
-    overall_tickets_count = len(f_tick_universe)
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+# Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
+status_col = "order_status" if "order_status" in f_del_universe.columns else None
+
+overall_orders_count = len(f_del_universe)
+overall_tickets_count = len(f_tick_universe)
+overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
 subcat_col = "subcat_final" if "subcat_final" in f_tick_universe.columns else "raw_subcat"
 defect_tickets_count = len(f_tick_universe[f_tick_universe[subcat_col].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
