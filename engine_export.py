@@ -230,6 +230,7 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     wb.remove(wb.active)  # Remove default active sheet
 
     subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
+    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
 
     # Dynamic pre-calculation segments for Pre, Post, and Combined Summaries
     post_del = del_df[del_df["is_delivered"] == True]
