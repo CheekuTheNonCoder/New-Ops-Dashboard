@@ -1,7 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
-Fixed: Implemented segment-aware separate KPIs and side-by-side matrices in Combined Mode.
+Fixed: Aligned calculations strictly with row-count denominators and added a prominent validation panel.
 """
 import streamlit as st
 import pandas as pd
@@ -213,6 +213,43 @@ else:
     f_tick_universe = f_tick.copy()
 
 
+# ── RECONCILIATION VALIDATION PANEL (MANDATORY VERIFICATION) ──
+st.markdown(f"### 📋 System Verification & Data Reconciliation — {selected_period}")
+
+status_col = "order_status" if "order_status" in f_del.columns else None
+v_orders_filter = len(f_del)
+v_delivered_rows = len(f_del[f_del[status_col].astype(str).str.strip().str.lower() == "delivered"]) if status_col else len(f_del)
+v_all_status_rows = len(f_del)
+v_post_tickets = len(f_tick[f_tick["ticket_category"] == "POST_DELIVERY"])
+v_pre_tickets = len(f_tick[f_tick["ticket_category"] == "PRE_DELIVERY"])
+
+v_post_esc = f"{v_post_tickets:,} / {v_delivered_rows:,} = {round((v_post_tickets / max(v_delivered_rows, 1)) * 100, 2)}%"
+v_pre_esc = f"{v_pre_tickets:,} / {v_all_status_rows:,} = {round((v_pre_tickets / max(v_all_status_rows, 1)) * 100, 2)}%"
+
+reconciliation_data = {
+    "Metric Parameter": [
+        "Orders after Month Filter",
+        "Delivered Rows (Post Denominator)",
+        "All Status Rows (Pre Denominator)",
+        "Post Tickets (Post Numerator)",
+        "Pre Tickets (Pre Numerator)",
+        "Post Escalation (Post Tickets / Delivered Rows)",
+        "Pre Escalation (Pre Tickets / All Status Rows)"
+    ],
+    "Value Count / Formula": [
+        f"{v_orders_filter:,}",
+        f"{v_delivered_rows:,}",
+        f"{v_all_status_rows:,}",
+        f"{v_post_tickets:,}",
+        f"{v_pre_tickets:,}",
+        v_post_esc,
+        v_pre_esc
+    ]
+}
+val_df = pd.DataFrame(reconciliation_data)
+st.table(val_df)
+
+
 # ── RUN SEGMENT ANALYTICS ──
 brand_sum = compute_brand_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
 prod_sum = compute_product_summary(f_del_universe, f_tick_universe, analysis_mode, crit_del, crit_esc, crit_tix, high_del, high_esc, med_del, med_esc)
@@ -221,12 +258,19 @@ weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
-# Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
-status_col = "order_status" if "order_status" in f_del_universe.columns else None
-
-overall_orders_count = f_del_universe["order_id"].nunique() if not f_del_universe.empty else 0
-overall_tickets_count = len(f_tick_universe)
-overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+# Aligned KPIs: Metrics scale and match the Validation Panel exactly
+if analysis_mode == "Post Delivery":
+    overall_orders_count = v_delivered_rows
+    overall_tickets_count = v_post_tickets
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+elif analysis_mode == "Pre Delivery":
+    overall_orders_count = v_all_status_rows
+    overall_tickets_count = v_pre_tickets
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+else:
+    overall_orders_count = v_all_status_rows
+    overall_tickets_count = len(f_tick_universe)
+    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
 subcat_col = "subcat_final" if "subcat_final" in f_tick_universe.columns else "raw_subcat"
 defect_tickets_count = len(f_tick_universe[f_tick_universe[subcat_col].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
@@ -298,31 +342,18 @@ st.sidebar.download_button(
 st.markdown("### 📊 Active Segment Performance Overview")
 
 if analysis_mode == "Combined":
-    # Under Combined Mode, calculate and display BOTH metrics separately
-    if status_col:
-        post_orders_count = f_del_universe[f_del_universe[status_col].astype(str).str.strip().str.lower() == "delivered"]["order_id"].nunique()
-    else:
-        post_orders_count = f_del_universe["order_id"].nunique()
-    pre_orders_count = f_del_universe["order_id"].nunique()
-    
-    post_tickets_count = len(f_tick_universe[f_tick_universe["ticket_category"] == "POST_DELIVERY"])
-    pre_tickets_count = len(f_tick_universe[f_tick_universe["ticket_category"] == "PRE_DELIVERY"])
-    
-    post_esc_rate = round((post_tickets_count / max(post_orders_count, 1)) * 100, 2)
-    pre_esc_rate = round((pre_tickets_count / max(pre_orders_count, 1)) * 100, 2)
-    
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1: kpi("Delivered Orders", f"{post_orders_count:,}", "Post Denominator", "blue")
-    with c2: kpi("Total Orders", f"{pre_orders_count:,}", "Pre Denominator", "blue")
-    with c3: kpi("Post Tickets", f"{post_tickets_count:,}", "Post Numerator", "red")
-    with c4: kpi("Pre Tickets", f"{pre_tickets_count:,}", "Pre Numerator", "red")
-    with c5: kpi("Post Escalation %", f"{post_esc_rate}%", "Post Tickets ÷ Delivered", "amber" if post_esc_rate >= 3.0 else "green")
-    with c6: kpi("Pre Escalation %", f"{pre_esc_rate}%", "Pre Tickets ÷ Total", "amber" if pre_esc_rate >= 3.0 else "green")
+    with c1: kpi("Delivered Orders", f"{v_delivered_rows:,}", "Post Denominator", "blue")
+    with c2: kpi("Total Orders", f"{v_all_status_rows:,}", "Pre Denominator", "blue")
+    with c3: kpi("Post Tickets", f"{v_post_tickets:,}", "Post Numerator", "red")
+    with c4: kpi("Pre Tickets", f"{v_pre_tickets:,}", "Pre Numerator", "red")
+    with c5: kpi("Post Escalation %", f"{v_post_esc.split(' = ')[1]}", "Post Tickets ÷ Delivered", "amber" if v_post_tickets/max(v_delivered_rows,1)*100 >= 3.0 else "green")
+    with c6: kpi("Pre Escalation %", f"{v_pre_esc.split(' = ')[1]}", "Pre Tickets ÷ Total", "amber" if v_pre_tickets/max(v_all_status_rows,1)*100 >= 3.0 else "green")
 else:
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1: 
         lbl_o = "Delivered Orders" if analysis_mode == "Post Delivery" else "Total Orders"
-        kpi(lbl_o, f"{overall_orders_count:,}", "Unique Order IDs from dynamic status rules.", "blue")
+        kpi(lbl_o, f"{overall_orders_count:,}", "Raw row count from the orders dataset.", "blue")
     with c2: 
         kpi("Tickets", f"{overall_tickets_count:,}", "Filtered universe numerator.", "red")
     with c3: 
@@ -544,10 +575,10 @@ with tab5:
                 disp_comp_prod = disp_comp_prod.sort_values(["Brand", "Product"], ascending=True)
             elif comp_sort_choice == "Highest Variance":
                 disp_comp_brand = disp_comp_brand.sort_values("Esc % Difference", ascending=False)
-                disp_comp_prod = disp_comp_prod.sort_values("Esc % Difference", ascending=False)
+                disp_comp_prod = disp_comp_prod.sort_values(["Brand", "Product"], ascending=True)
             elif comp_sort_choice == "Lowest Variance":
                 disp_comp_brand = disp_comp_brand.sort_values("Esc % Difference", ascending=True)
-                disp_comp_prod = disp_comp_prod.sort_values("Esc % Difference", ascending=True)
+                disp_comp_prod = disp_comp_prod.sort_values(["Brand", "Product"], ascending=True)
 
             st.markdown(f'<p class="shdr">Brand Level Variance ({month_a} vs {month_b})</p>', unsafe_allow_html=True)
             st.dataframe(disp_comp_brand, use_container_width=True)
@@ -622,7 +653,7 @@ with tab8:
                     try:
                         out = call_gemini(f"""Senior Operational Analyst.
 Active Analysis Universe Mode: {analysis_mode}
-Context: {overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets, overall escalation {overall_esc_rate}%.
+Context: {overall_orders_count:,} orders, {overall_tickets_count:,} tickets, overall escalation {overall_esc_rate}%.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
 Top Issues Categories: {json.dumps(top_i)}
@@ -640,7 +671,7 @@ Ensure your recommendations reference metrics from the dataset. Maintain a busin
                         try:
                             out = call_gemini(f"""Senior Escalation Engineer.
 Active Analysis Universe Mode: {analysis_mode}
-{overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets.
+{overall_orders_count:,} orders, {overall_tickets_count:,} tickets.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
 Top Issues: {json.dumps(top_i)}
