@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Re-defined _detect_col helper globally to prevent NameError in load functions.
+Fixed: Retains 100% of raw rows from Google Sheets (No unmapped brand dropping).
 """
 import io
 import pandas as pd
@@ -74,10 +74,13 @@ def _detect_order_col(df):
 
 
 def _detect_brand_col(df):
+    """Locates the brand column, preventing matching on customerid."""
     brand_keywords = ["company_name", "company name", "company nam", "company", "brand", "seller"]
     for kw in brand_keywords:
         for col in df.columns:
             col_clean = str(col).lower().strip()
+            if "customer" in col_clean:
+                continue
             if kw in col_clean:
                 return col
     return df.columns[3] if len(df.columns) > 3 else df.columns[0]
@@ -292,7 +295,8 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
     tick_raw["brand"] = tick_raw["raw_brand"].map(brand_map).astype(str)
     tick_raw["_redistributed"] = False
 
-    del_clean = del_raw[del_raw["brand"] != "Unmapped Brand"].copy().reset_index(drop=True)
+    # FIX: KEEP 100% of raw order rows (no brand filtering here) to preserve denominator counts
+    del_clean = del_raw.copy().reset_index(drop=True)
 
     # ── Step 3: Exact Cohort Joins ──
     update(35, "Aligning support ticket cohorts safely...")
