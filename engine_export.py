@@ -1,7 +1,7 @@
 """
 engine_export.py — Premium Dynamic Exporter (v4.0)
 Constructs formatted multi-sheet Excel workbooks matching dashboard totals exactly.
-Fixed: Integrated segment-aware columns logic for both Combined and Single Mode sheets.
+Fixed: Calibrated with len() row counts instead of nunique() to enforce strict operational matching.
 """
 import io
 import pandas as pd
@@ -224,13 +224,12 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
                           orig_tickets, final_tickets, val_ok, period="All Data"):
     """
     Constructs a dynamic workbook aligning values cleanly with active dataset metrics.
-    Employs unique Order ID denominators across sheets for mathematical correctness.
+    Employs exact raw row counts as denominators across sheets for mathematical correctness.
     """
     wb = Workbook()
     wb.remove(wb.active)  # Remove default active sheet
 
     subcat_col = "subcat_final" if "subcat_final" in tick_df.columns else "raw_subcat"
-    order_col = "order_id" if "order_id" in del_df.columns else "zop_id"
 
     # Dynamic pre-calculation segments for Pre, Post, and Combined Summaries
     post_del = del_df[del_df["is_delivered"] == True]
@@ -250,8 +249,8 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
     pre_subcat = compute_subcat_summary(pre_tick)
     post_subcat = compute_subcat_summary(post_tick)
 
-    # Compute exact unique orders denominators for segment scorecards
-    pre_orders_count = pre_del[order_col].nunique() if not pre_del.empty else 0
+    # Compute exact raw row counts as denominators for segment scorecards
+    pre_orders_count = len(pre_del)
     pre_tickets_count = len(pre_tick)
     pre_esc_rate = round((pre_tickets_count / max(pre_orders_count, 1)) * 100, 2)
     pre_defect_count = len(pre_tick[pre_tick[subcat_col].isin(HIGH_SUBCATS)]) if not pre_tick.empty else 0
@@ -265,7 +264,7 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
         "spike_week": kpis.get("spike_week", "—")
     }
 
-    post_orders_count = post_del[order_col].nunique() if not post_del.empty else 0
+    post_orders_count = len(post_del)
     post_tickets_count = len(post_tick)
     post_esc_rate = round((post_tickets_count / max(post_orders_count, 1)) * 100, 2)
     post_defect_count = len(post_tick[post_tick[subcat_col].isin(HIGH_SUBCATS)]) if not post_tick.empty else 0
@@ -279,7 +278,7 @@ def generate_excel_report(kpis, brand_sum, prod_sum, subcat_sum,
         "spike_week": kpis.get("spike_week", "—")
     }
 
-    comb_orders_count = del_df[order_col].nunique() if not del_df.empty else 0
+    comb_orders_count = len(del_df)
     comb_tickets_count = len(tick_df)
     comb_esc_rate = round((comb_tickets_count / max(comb_orders_count, 1)) * 100, 2)
     comb_defect_count = len(tick_df[tick_df[subcat_col].isin(HIGH_SUBCATS)]) if not tick_df.empty else 0
