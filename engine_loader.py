@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Retains 100% of raw rows from Google Sheets (No unmapped brand dropping).
+Fixed: Smartly maps exact columns and retains 100% of raw rows (no brand filtering here).
 """
 import io
 import pandas as pd
@@ -36,7 +36,6 @@ def _detect_date_col(df):
     Intelligently scans all columns in the DataFrame to locate the most likely date column.
     Checks for keyword matches, and fallbacks to parsing columns until one succeeds with minimal NaT.
     """
-    # Enforces exact order_delivered_at, order_created_at and createdAtDate mappings
     date_keywords = ["order_delivered_at", "order_created_at", "delivered_at", "createdatdate", "created_at", "date", "time", "created", "timestamp", "day", "delivered"]
     
     # Keyword search
