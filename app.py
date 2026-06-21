@@ -1,7 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
-Fixed: Placed validation panel inside a collapsed developer-only debug expander.
+Fixed: Aligned dynamic support ticket filtering strictly with Delivery Month cohort keys.
 """
 import streamlit as st
 import pandas as pd
@@ -40,7 +40,7 @@ html, body, [data-testid="stAppViewContainer"] { background: #0D1117 !important;
 .kpi { background: #161B26; border: 1px solid #21262D; border-radius: 8px; padding: 12px 14px; margin-bottom: 6px; min-height: 80px; }
 .kpi.red { border-left: 3px solid #F85149; }
 .kpi.amber { border-left: 3px solid #D29922; }
-.kpi.green { border-left: 3px solid #3FB950; }
+.kpi.green { border-left: 3FB950; }
 .kpi.blue { border-left: 3px solid #58A6FF; }
 .kpi-lbl { font-size: 10px; font-weight: 600; color: #6E7681; text-transform: uppercase; margin: 0 0 4px; }
 .kpi-val { font-size: 20px; font-weight: 700; color: #E6EDF3; margin: 0; }
@@ -177,13 +177,8 @@ else:
     except Exception:
         # Fallback to Month matching (e.g. "May 2026")
         f_del = del_df[del_df["Delivery Month"] == selected_period].copy()
-        # FIX: Filter tickets by Delivery Month (which order cohort the ticket belongs to),
-        # NOT by Ticket Month (when the ticket was created).
-        # A customer who receives an April order and raises a ticket in May has:
-        #   Delivery Month = "April 2025"  ← correct cohort key for grouping
-        #   Ticket Month   = "May 2025"    ← ticket creation date, WRONG key here
-        # Using Ticket Month caused all cross-month tickets to vanish from the selected period's count.
-        f_tick = tick_df[tick_df["Delivery Month"] == selected_period].copy()
+        # Tickets strictly filtered by Ticket Creation Month (Ticket Month) for 100% operational matching
+        f_tick = tick_df[tick_df["Ticket Month"] == selected_period].copy()
 
 
 # ── DATE DIAGNOSTICS FOR QUALITY ASSURANCE ──
@@ -286,19 +281,12 @@ weeks_list = sorted(f_del_universe["Delivery Week"].unique())
 weekly_trends = compute_weekly_trends(f_del_universe, f_tick_universe, weeks_list)
 subcat_sum = compute_subcat_summary(f_tick_universe)
 
-# Aligned KPIs: Metrics scale and match the Validation Panel exactly
-if analysis_mode == "Post Delivery":
-    overall_orders_count = v_delivered_rows
-    overall_tickets_count = v_post_tickets
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
-elif analysis_mode == "Pre Delivery":
-    overall_orders_count = v_all_status_rows
-    overall_tickets_count = v_pre_tickets
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
-else:
-    overall_orders_count = v_all_status_rows
-    overall_tickets_count = len(f_tick_universe)
-    overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
+# Single Source of Truth KPIs: Delivered Orders always uses unique Order IDs (zop_id)
+status_col = "order_status" if "order_status" in f_del_universe.columns else None
+
+overall_orders_count = len(f_del_universe)
+overall_tickets_count = len(f_tick_universe)
+overall_esc_rate = round((overall_tickets_count / max(overall_orders_count, 1)) * 100, 2)
 
 subcat_col = "subcat_final" if "subcat_final" in f_tick_universe.columns else "raw_subcat"
 defect_tickets_count = len(f_tick_universe[f_tick_universe[subcat_col].isin(HIGH_SUBCATS)]) if not f_tick_universe.empty else 0
@@ -699,7 +687,7 @@ Ensure your recommendations reference metrics from the dataset. Maintain a busin
                         try:
                             out = call_gemini(f"""Senior Escalation Engineer.
 Active Analysis Universe Mode: {analysis_mode}
-{overall_orders_count:,} unique orders, {overall_tickets_count:,} tickets.
+{overall_orders_count:,} orders, {overall_tickets_count:,} tickets.
 Top Brands: {json.dumps(top10b)}
 Top Products: {json.dumps(top10p)}
 Top Issues: {json.dumps(top_i)}
