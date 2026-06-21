@@ -225,7 +225,11 @@ def load_delivered(df_or_bytes):
         "order_status": df[status_col].astype(str).str.strip() if status_col else "delivered"
     })
     
-    out["is_delivered"] = out["order_status"].str.lower() == "delivered"
+    # FIX: Use str.contains("deliver") instead of strict equality "== delivered".
+    # Strict equality silently drops status values like "Delivered to Customer",
+    # "Order Delivered", "Successfully Delivered", etc., collapsing the Post Delivery
+    # denominator from the true order volume down to only the exact-match subset.
+    out["is_delivered"] = out["order_status"].str.lower().str.contains("deliver", na=False)
     out = parse_date_hierarchy(out, "raw_date", "Delivery")
     return out
 
