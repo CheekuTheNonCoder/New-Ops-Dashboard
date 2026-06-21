@@ -1,7 +1,7 @@
 """
 engine_loader.py — Time Intelligence & Dynamic Loader (v4.0)
 Calculates hierarchies, handles cohort joins, and tracks date intervals dynamically.
-Fixed: Implemented comprehensive delivered status matching while safely rejecting 'outfordelivery'.
+Fixed: Calibrated strict %d-%m-%Y explicit format parsing first to prevent month-shifting.
 """
 import io
 import pandas as pd
@@ -109,7 +109,7 @@ def _detect_status_col(df):
 def safe_parse_datetime(series):
     """
     A completely bulletproof date parser. Handles Excel serial dates, 
-    day-first string dates, and mixed formats safely with validation.
+    strict European day-first formats, and mixed formats safely.
     """
     s = series.copy()
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -126,17 +126,24 @@ def safe_parse_datetime(series):
     except Exception:
         pass
         
-    # Attempt 1: Standard dayfirst=True parsing (the absolute standard for European DD-MM-YYYY)
-    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
-    
-    # If standard parsing failed or yielded mostly NaT, try format="mixed"
-    if parsed.isna().sum() > len(parsed) * 0.5:
+    # Attempt 1: Try parsing with explicit dayfirst formats first to prevent month-day shifting
+    for fmt in ["%d-%m-%Y", "%d/%m/%Y", "%d-%m-%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"]:
         try:
-            parsed = pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
+            parsed = pd.to_datetime(s, format=fmt, errors="coerce")
+            if parsed.notna().sum() > len(parsed) * 0.8:
+                return parsed
         except Exception:
-            parsed = pd.to_datetime(s, errors="coerce")
+            pass
+
+    # Attempt 2: Fallback to general dayfirst parsing
+    parsed_fallback = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if parsed_fallback.isna().sum() > len(parsed_fallback) * 0.5:
+        try:
+            parsed_fallback = pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=True)
+        except Exception:
+            parsed_fallback = pd.to_datetime(s, errors="coerce")
             
-    return parsed
+    return parsed_fallback
 
 
 def parse_date_hierarchy(df, col_name, prefix):
