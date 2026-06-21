@@ -267,7 +267,28 @@ def load_tickets(df_or_bytes):
 
 
 def process_pipeline(del_input, tick_input, rng_seed=42):
-    """Executes structural dataset loadings, matches cohorts safely, and redistributes unmapped brand tickets."""
+    """
+    Master ingestion pipeline: loads, normalises, cohort-enriches, and redistributes data.
+
+    Architectural contract
+    ──────────────────────
+    TWO INDEPENDENT TRACKS run in parallel and must never cross-contaminate:
+
+      Track A — Orders (del_clean):
+        del_raw  →  brand normalisation  →  del_clean
+        del_clean is the FULL, unfiltered order universe. It is the denominator for every
+        KPI (Escalation %, defect rates, etc.). An order that never raised a ticket is
+        still a valid delivered order and must be counted.
+
+      Track B — Tickets (tick_raw / all_ticks):
+        tick_raw  →  brand normalisation  →  LEFT JOIN delivery dates from Track A
+                  →  subcat redistribution  →  all_ticks
+
+    The LEFT JOIN in Step 3 moves date metadata FROM orders ONTO tickets.
+    It does NOT — and must never — act as a filter on del_clean.
+    Joining with INNER would silently drop ~46 % of orders (those with no ticket),
+    collapsing the denominator and inflating Escalation % to near 100 %.
+    """
     rng = np.random.default_rng(rng_seed)
     prog = st.progress(0)
     status = st.empty()
@@ -276,114 +297,149 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
         prog.progress(pct)
         status.info(f"⚙️ {msg}")
 
-    # ── Step 1: Loading ──
+    # ── Step 1: Raw Load ──────────────────────────────────────────────────────────────────
     update(5, "Loading active operational datasets...")
     del_raw = load_delivered(del_input)
     tick_raw = load_tickets(tick_input)
     ORIGINAL_TICKET_COUNT = len(tick_raw)
 
-    # ── Step 2: Normalize Brands ──
+    # ── Step 2: Brand Normalisation ───────────────────────────────────────────────────────
     update(15, "Normalizing brand profile listings...")
-    unique_del_brands = del_raw["raw_brand"].unique()
-    unique_tick_brands = tick_raw["raw_brand"].unique()
-    all_unique_brands = set(unique_del_brands) | set(unique_tick_brands)
-
+    all_unique_brands = set(del_raw["raw_brand"].unique()) | set(tick_raw["raw_brand"].unique())
     brand_map = {b: normalize_brand_name(b) for b in all_unique_brands}
 
     del_raw["brand"] = del_raw["raw_brand"].map(brand_map).astype(str)
     tick_raw["brand"] = tick_raw["raw_brand"].map(brand_map).astype(str)
     tick_raw["_redistributed"] = False
 
-    # FIX: KEEP 100% of raw order rows (no brand filtering here) to preserve denominator counts
+    # ── TRACK A: Freeze del_clean as the full order universe ─────────────────────────────
+    # This is the last assignment to del_clean. Nothing downstream may filter it.
+    # Any row removed here permanently shrinks the KPI denominator.
     del_clean = del_raw.copy().reset_index(drop=True)
 
-    # ── Step 3: Exact Cohort Joins ──
+    # ── Step 3: Ticket Date Enrichment (LEFT JOIN — Track B only) ────────────────────────
+    # Purpose: stamp each ticket with the delivery-date hierarchy of its matched order.
+    # Scope:   tickets only. del_clean is not touched.
+    # Method:  LEFT JOIN so every ticket row is retained regardless of whether its
+    #          order_id exists in del_clean.
     update(35, "Aligning support ticket cohorts safely...")
-    
-    valid_order_mask = (
-        del_clean["order_id"].notna() & 
-        (del_clean["order_id"].astype(str).str.strip() != "") & 
-        (del_clean["order_id"].astype(str).str.lower() != "nan") & 
-        (del_clean["order_id"].astype(str).str.len() > 3)
-    )
-    
-    # Deduplicate Order Lookup on unique Order ID (zop_id) to prevent duplicate joins
-    del_lookup = del_clean[valid_order_mask].drop_duplicates(subset=["order_id"]).set_index("order_id")[
-        ["Delivery Date", "Delivery Week", "Delivery Month", "Delivery Quarter", "Delivery Year", "Delivery Month Sort"]
-    ]
-    
-    # Join tickets on Order ID (OrderID -> zop_id)
-    tick_raw = tick_raw.join(del_lookup, on="order_id", how="left")
-    
-    # Fallback if Order ID is absent in Delivered Orders
-    tick_raw["Delivery Date"] = tick_raw["Delivery Date"].fillna(tick_raw["Ticket Date"])
-    tick_raw["Delivery Week"] = tick_raw["Delivery Week"].fillna(tick_raw["Ticket Week"])
-    tick_raw["Delivery Month"] = tick_raw["Delivery Month"].fillna(tick_raw["Ticket Month"])
-    tick_raw["Delivery Quarter"] = tick_raw["Delivery Quarter"].fillna(tick_raw["Ticket Quarter"])
-    tick_raw["Delivery Year"] = tick_raw["Delivery Year"].fillna(tick_raw["Ticket Year"])
-    tick_raw["Delivery Month Sort"] = tick_raw["Delivery Month Sort"].fillna(tick_raw["Ticket Month Sort"])
 
-    valid_mask = tick_raw["brand"] != "Unmapped Brand"
+    valid_order_mask = (
+        del_clean["order_id"].notna()
+        & (del_clean["order_id"].astype(str).str.strip() != "")
+        & (del_clean["order_id"].astype(str).str.lower() != "nan")
+        & (del_clean["order_id"].astype(str).str.len() > 3)
+    )
+
+    # One delivery-date row per unique order ID to avoid fan-out on duplicate IDs
+    _DATE_COLS = ["Delivery Date", "Delivery Week", "Delivery Month",
+                  "Delivery Quarter", "Delivery Year", "Delivery Month Sort"]
+    del_lookup = (
+        del_clean[valid_order_mask]
+        .drop_duplicates(subset=["order_id"])
+        .set_index("order_id")[_DATE_COLS]
+    )
+
+    # LEFT JOIN: every ticket is kept; unmatched ones get NaT in the Delivery* columns
+    tick_raw = tick_raw.join(del_lookup, on="order_id", how="left")
+
+    # Fallback: tickets whose order_id had no match inherit their own ticket-date hierarchy
+    for period in ["Date", "Week", "Month", "Quarter", "Year"]:
+        tick_raw[f"Delivery {period}"] = (
+            tick_raw[f"Delivery {period}"].fillna(tick_raw[f"Ticket {period}"])
+        )
+    tick_raw["Delivery Month Sort"] = (
+        tick_raw["Delivery Month Sort"].fillna(tick_raw["Ticket Month Sort"])
+    )
+
+    # Split tickets: brand-mapped vs brand-unmapped (for redistribution in Step 5)
+    valid_mask  = tick_raw["brand"] != "Unmapped Brand"
     valid_ticks = tick_raw[valid_mask].copy()
 
-    # ── Step 4: Product Registry Matching ──
+    # ── Step 4: Product Registry ──────────────────────────────────────────────────────────
+    # Record ALL delivered orders — including trouble-free ones — so the registry
+    # correctly reflects the full product volume universe.
     update(55, "Resolving canonical products mapping...")
     registry = ProductRegistry()
-    for _, row in del_clean.iterrows():
-        registry.record_delivered(row["brand"], row["raw_product"])
+
+    # Vectorised recording: pre-aggregate to one call per (brand, product) pair instead
+    # of one Python call per row. Critical for 100 k+ order datasets.
+    del_agg = (
+        del_clean
+        .groupby(["brand", "raw_product"], dropna=False)
+        .size()
+        .reset_index(name="_cnt")
+    )
+    for _, row in del_agg.iterrows():
+        registry.record_delivered(row["brand"], row["raw_product"], int(row["_cnt"]))
+
     for _, row in valid_ticks.iterrows():
         registry.record_ticket(row["brand"], row["raw_product"])
-        
+
     registry.resolve()
 
-    del_clean["canonical_product"] = del_clean.apply(
-        lambda r: registry.resolved_map.get(str(r["brand"]), {}).get(
-            str(r["raw_product"]).strip().strip('"').strip("'"), r["raw_product"]
-        ), axis=1
-    )
-    
-    tick_raw["canonical_product"] = "Unmapped Product"
-    valid_ticks["canonical_product"] = valid_ticks.apply(
-        lambda r: registry.resolved_map.get(str(r["brand"]), {}).get(
-            str(r["raw_product"]).strip().strip('"').strip("'"), r["raw_product"]
-        ), axis=1
-    )
+    # ── Canonical product mapping — single shared helper ─────────────────────────────────
+    def _apply_canonical(df: pd.DataFrame) -> pd.Series:
+        """Resolves raw_product → canonical_product via the registry resolved_map."""
+        return df.apply(
+            lambda r: registry.resolved_map
+                               .get(str(r["brand"]), {})
+                               .get(str(r["raw_product"]).strip().strip('"').strip("'"),
+                                    r["raw_product"]),
+            axis=1,
+        )
+
+    del_clean["canonical_product"]  = _apply_canonical(del_clean)
+
+    tick_raw["canonical_product"]   = "Unmapped Product"
+    valid_ticks["canonical_product"] = _apply_canonical(valid_ticks)
+    # Write back using positional values — valid_ticks is a boolean slice of tick_raw
+    # so lengths are guaranteed to align.
     tick_raw.loc[valid_mask, "canonical_product"] = valid_ticks["canonical_product"].values
 
     brand_unmapped = tick_raw[~valid_mask].copy()
 
-    # ── Step 5: Redistribution ──
+    # ── Step 5: Unmapped-Brand Ticket Redistribution ──────────────────────────────────────
     update(70, "Executing ticket redistribution model...")
     from engine_analytics import compute_brand_summary as _bs
-    base_brand_sum = _bs(del_clean, valid_ticks, "Post Delivery")  # Backwards safe parameter
-    brand_weights = compute_brand_weights(base_brand_sum, valid_ticks)
+    base_brand_sum = _bs(del_clean, valid_ticks, "Post Delivery")
+    brand_weights  = compute_brand_weights(base_brand_sum, valid_ticks)
 
     dist_brand = redistribute_tickets(brand_unmapped, brand_weights, rng)
     if len(dist_brand) > 0:
-        dist_brand["canonical_product"] = dist_brand.apply(
-            lambda r: registry.resolved_map.get(str(r["brand"]), {}).get(
-                str(r["raw_product"]).strip().strip('"').strip("'"), r["raw_product"]
-            ), axis=1
-        )
+        dist_brand["canonical_product"] = _apply_canonical(dist_brand)
 
     all_ticks = pd.concat([valid_ticks, dist_brand], ignore_index=True)
-    val_ok = len(all_ticks) == ORIGINAL_TICKET_COUNT
+    val_ok = (len(all_ticks) == ORIGINAL_TICKET_COUNT)
 
-    # ── Step 6: Subcategory Normalization ──
+    # ── Step 6: Subcategory Normalisation ─────────────────────────────────────────────────
     update(85, "Resolving placeholder subcategories...")
     n_nf = int((all_ticks["raw_subcat"] == "Not Found").sum())
     n_nd = int((all_ticks["raw_subcat"] == "Need Details").sum())
-    
+
+    # redistribute_subcat uses a stateful RNG so a row-wise loop is required;
+    # no vectorisation possible without breaking reproducibility.
     all_ticks["subcat_final"] = [
-        redistribute_subcat(row["raw_subcat"], row["brand"], row["canonical_product"], row["ticket_category"], rng)
+        redistribute_subcat(
+            row["raw_subcat"], row["brand"],
+            row["canonical_product"], row["ticket_category"], rng,
+        )
         for _, row in all_ticks.iterrows()
     ]
 
-    tick_counts = all_ticks[all_ticks["brand"] != "Unmapped Brand"].groupby(["brand", "canonical_product"]).size().to_dict()
+    # Propagate final ticket counts back into the registry for product-level reporting
+    tick_counts = (
+        all_ticks[all_ticks["brand"] != "Unmapped Brand"]
+        .groupby(["brand", "canonical_product"])
+        .size()
+        .to_dict()
+    )
     for brand, groups in registry.final_groups.items():
         brand_str = str(brand)
         for cname in groups.keys():
-            registry.final_groups[brand_str][cname]["tickets"] = tick_counts.get((brand_str, cname), 0)
+            registry.final_groups[brand_str][cname]["tickets"] = (
+                tick_counts.get((brand_str, cname), 0)
+            )
 
     redist_summary = build_redistribution_summary(
         n_brand_nf=len(brand_unmapped),
@@ -391,11 +447,11 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
         n_need_details=n_nd,
         brand_weights=brand_weights,
     )
-    
-    invalid_del_dates = int(del_raw["Delivery Date"].apply(lambda x: x == "Unknown Date").sum())
+
+    invalid_del_dates  = int(del_raw["Delivery Date"].apply(lambda x: x == "Unknown Date").sum())
     invalid_tick_dates = int(tick_raw["Ticket Date"].apply(lambda x: x == "Unknown Date").sum())
 
-    raw_cat_counts = tick_raw["raw_category"].value_counts().to_dict()
+    raw_cat_counts  = tick_raw["raw_category"].value_counts().to_dict()
     norm_cat_counts = tick_raw["ticket_category"].value_counts().to_dict()
 
     update(95, "Completing calculations...")
@@ -403,19 +459,22 @@ def process_pipeline(del_input, tick_input, rng_seed=42):
     status.empty()
 
     return {
-        "del_df": del_clean,
-        "tick_df": all_ticks,
-        "registry": registry,
-        "brand_weights": brand_weights,
-        "redist_summary": redist_summary,
+        # ── Track A: full order universe — unreduced KPI denominator ──
+        "del_df":                del_clean,
+        # ── Track B: all tickets post-redistribution ───────────────────
+        "tick_df":               all_ticks,
+        # ── Supporting artefacts ───────────────────────────────────────
+        "registry":              registry,
+        "brand_weights":         brand_weights,
+        "redist_summary":        redist_summary,
         "original_ticket_count": ORIGINAL_TICKET_COUNT,
-        "n_unmapped_brand": len(brand_unmapped),
-        "n_not_found_subcat": n_nf,
-        "n_need_details": n_nd,
-        "final_ticket_count": len(all_ticks),
-        "validation_ok": val_ok,
-        "invalid_del_dates": invalid_del_dates,
-        "invalid_tick_dates": invalid_tick_dates,
-        "raw_cat_counts": raw_cat_counts,
-        "norm_cat_counts": norm_cat_counts
+        "n_unmapped_brand":      len(brand_unmapped),
+        "n_not_found_subcat":    n_nf,
+        "n_need_details":        n_nd,
+        "final_ticket_count":    len(all_ticks),
+        "validation_ok":         val_ok,
+        "invalid_del_dates":     invalid_del_dates,
+        "invalid_tick_dates":    invalid_tick_dates,
+        "raw_cat_counts":        raw_cat_counts,
+        "norm_cat_counts":       norm_cat_counts,
     }
