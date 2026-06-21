@@ -1,7 +1,7 @@
 """
 app.py — Enterprise Operations Intelligence Platform (v4.0)
 Calculates overall support metrics and maps custom single-period dropdown filters.
-Fixed: Aligned dynamic support ticket filtering strictly with Delivery Month cohort keys.
+Fixed: Implemented cache-invalidation key to force clear Streamlit's old memory cache.
 """
 import streamlit as st
 import pandas as pd
@@ -68,8 +68,9 @@ def handle_ai_error(e):
         st.error(f"⚠️ **AI Execution Error:** {err_msg}")
 
 
+# Dynamic version key strictly forces Streamlit to invalidate its memory cache and reload raw data
 @st.cache_data(show_spinner=False)
-def run_pipeline(del_df_raw, tick_df_raw):
+def run_pipeline(del_df_raw, tick_df_raw, app_version="v4.3"):
     return process_pipeline(del_df_raw, tick_df_raw)
 
 
@@ -138,7 +139,7 @@ else:
 
 # ── RUN CALCULATIONS ──
 try:
-    D = run_pipeline(del_df_raw, tick_df_raw)
+    D = run_pipeline(del_df_raw, tick_df_raw, app_version="v4.3")
 except Exception as e:
     st.error(f"❌ Pipeline Execution Error: {e}")
     st.stop()
@@ -659,7 +660,7 @@ with tab8:
 
         top10b = brand_sum.head(10)[["brand", "delivered", "tickets", "esc_pct"]].to_dict("records") if not brand_sum.empty else []
         top10p = prod_sum.head(10)[["brand", "canonical_product", "delivered", "tickets", "esc_pct"]].to_dict("records") if not prod_sum.empty else []
-        top_i = f_tick_universe.groupby("subcat_final").size().reset_index(name="count").sort_values("count", ascending=False).head(8).to_dict("records") if not f_tick_universe.empty else []
+        top_i  = f_tick_universe.groupby("subcat_final").size().reset_index(name="count").sort_values("count", ascending=False).head(8).to_dict("records") if not f_tick_universe.empty else []
 
         ai1, ai2 = st.columns(2)
         with ai1:
