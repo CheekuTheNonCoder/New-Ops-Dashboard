@@ -177,8 +177,13 @@ else:
     except Exception:
         # Fallback to Month matching (e.g. "May 2026")
         f_del = del_df[del_df["Delivery Month"] == selected_period].copy()
-        # Tickets strictly filtered by Ticket Creation Month (Ticket Month) for 100% operational matching
-        f_tick = tick_df[tick_df["Ticket Month"] == selected_period].copy()
+        # FIX: Filter tickets by Delivery Month (which order cohort the ticket belongs to),
+        # NOT by Ticket Month (when the ticket was created).
+        # A customer who receives an April order and raises a ticket in May has:
+        #   Delivery Month = "April 2025"  ← correct cohort key for grouping
+        #   Ticket Month   = "May 2025"    ← ticket creation date, WRONG key here
+        # Using Ticket Month caused all cross-month tickets to vanish from the selected period's count.
+        f_tick = tick_df[tick_df["Delivery Month"] == selected_period].copy()
 
 
 # ── DATE DIAGNOSTICS FOR QUALITY ASSURANCE ──
